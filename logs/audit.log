@@ -1,0 +1,6 @@
+2026-08-28 13:56:10,971 - INFO - {"request_id": "req-d9b0f2f7d1f8", "timestamp": "2026-08-28T08:26:10.971189+00:00", "client_ip": "127.0.0.1", "user": "employee-default", "original_prompt": "user: AWS Secret: AKIAIOSFODNN7EXAMPLE", "action": "BLOCK", "redacted_prompt": "[REQUEST BLOCKED BY PROMPTGUARD FIREWALL]", "detections_count": 1, "detections_summary": [{"stage_id": 2, "stage_name": "Stage 2: Credential Scan", "entity_type": "AWS_ACCESS_KEY", "text_snippet": "AKIAIOSFODNN7EXAMPLE", "severity": "CRITICAL", "confidence": 0.98}], "status_code": 403, "latency_ms": 0.1}
+2026-08-31 21:47:23,768 - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 404 Not Found"
+2026-08-31 21:48:32,194 - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 400 Bad Request"
+2026-08-31 21:51:58,698 - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 404 Not Found"
+2026-08-31 21:52:29,937 - INFO - HTTP Request: POST http://localhost:11434/v1/chat/completions "HTTP/1.1 404 Not Found"
+2026-08-31 21:53:52,830 - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 404 Not Found"
