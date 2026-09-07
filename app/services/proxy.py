@@ -8,30 +8,84 @@ from app.models import ChatCompletionRequest, PolicyAction, PolicyDecision
 from app.detectors.pipeline import detection_pipeline
 from app.policy.engine import policy_engine
 from app.compliance.audit import audit_logger
+from app.services.mock_llm import mock_llm_service
+
 
 class ProxyService:
+    async def process_direct_chat(self, request: ChatCompletionRequest) -> Dict[str, Any]:
+        """Send a request to the same LLM without firewall inspection.
+
+        This endpoint is deliberately limited to the controlled demonstration
+        environment and provides the baseline for firewall-on/off comparisons.
+        """
+        llm_response, _ = await self._forward_to_llm(request.model_dump())
+        if isinstance(llm_response, dict):
+            llm_response["promptguard_meta"] = {
+                "firewall_applied": False,
+                "mode": "DIRECT",
+            }
+        return llm_response
+
     async def process_chat_completion(
         self,
         request: ChatCompletionRequest,
-        client_ip: str
+        client_ip: str,
     ) -> Dict[str, Any]:
         start_time = time.time()
         request_id = f"req-{uuid.uuid4().hex[:12]}"
         user_id = request.user or "employee-default"
 
-        # 1. Extract combined prompt text from messages
-        prompt_parts = []
-        for msg in request.messages:
-            prompt_parts.append(f"{msg.role}: {msg.content}")
-        combined_prompt = "\n".join(prompt_parts)
+        # Inspect each message independently so detection offsets always refer
+        # to the exact message being redacted.
+        target_payload = request.model_dump()
+        all_threats = []
+        reasons = []
+        redacted_prompt_parts = []
+        blocked_stage = None
 
-        # 2. Run 4-stage detection pipeline
-        pipeline_result = detection_pipeline.run(combined_prompt)
+        for original, target in zip(request.messages, target_payload["messages"]):
+            pipeline_result = detection_pipeline.run(original.content)
+            decision = policy_engine.evaluate(original.content, pipeline_result)
+            all_threats.extend(decision.detected_threats)
+            reasons.extend(decision.reasons)
+            redacted_prompt_parts.append(f"{original.role}: {decision.redacted_prompt}")
 
-        # 3. Evaluate Policy Decision
-        decision: PolicyDecision = policy_engine.evaluate(combined_prompt, pipeline_result)
+            if decision.action == PolicyAction.BLOCK and blocked_stage is None:
+                blocked_stage = decision.blocked_by_stage
+            elif decision.action == PolicyAction.REDACT:
+                target["content"] = decision.redacted_prompt
 
-        # Handle Policy Outcomes
+        combined_prompt = "\n".join(
+            f"{message.role}: {message.content}" for message in request.messages
+        )
+        combined_redacted_prompt = "\n".join(redacted_prompt_parts)
+
+        if blocked_stage is not None:
+            decision = PolicyDecision(
+                action=PolicyAction.BLOCK,
+                original_prompt=combined_prompt,
+                redacted_prompt="[REQUEST BLOCKED BY PROMPTGUARD FIREWALL]",
+                reasons=reasons,
+                detected_threats=all_threats,
+                blocked_by_stage=blocked_stage,
+            )
+        elif all_threats:
+            decision = PolicyDecision(
+                action=PolicyAction.REDACT,
+                original_prompt=combined_prompt,
+                redacted_prompt=combined_redacted_prompt,
+                reasons=reasons,
+                detected_threats=all_threats,
+            )
+        else:
+            decision = PolicyDecision(
+                action=PolicyAction.ALLOW,
+                original_prompt=combined_prompt,
+                redacted_prompt=combined_prompt,
+                reasons=["No security threats or sensitive data detected."],
+                detected_threats=[],
+            )
+
         if decision.action == PolicyAction.BLOCK:
             latency_ms = (time.time() - start_time) * 1000
             audit_logger.log_request(
@@ -41,7 +95,7 @@ class ProxyService:
                 original_prompt=combined_prompt,
                 decision=decision,
                 status_code=403,
-                latency_ms=latency_ms
+                latency_ms=latency_ms,
             )
             raise HTTPException(
                 status_code=403,
@@ -56,41 +110,27 @@ class ProxyService:
                             "stage": d.stage_name,
                             "type": d.entity_type,
                             "snippet": d.text_snippet,
-                            "severity": d.severity
+                            "severity": d.severity,
                         }
                         for d in decision.detected_threats
-                    ]
-                }
+                    ],
+                },
             )
 
-        # Prepare modified payload if REDACT
-        target_payload = request.model_dump()
-        if decision.action == PolicyAction.REDACT:
-            # Update the last user message or all user messages with redacted prompt
-            for msg in target_payload.get("messages", []):
-                if msg.get("role") == "user":
-                    # Simple single-user prompt redaction or inline redaction
-                    redacted_user_text = policy_engine._apply_redaction(
-                        msg["content"],
-                        pipeline_result.all_matches
-                    )
-                    msg["content"] = redacted_user_text
-
-        # Forward request to LLM (Upstream or Mock)
         llm_response, status_code = await self._forward_to_llm(target_payload)
         latency_ms = (time.time() - start_time) * 1000
 
-        # Inject PromptGuard metadata into LLM response for audit transparency
         if isinstance(llm_response, dict):
             llm_response["promptguard_meta"] = {
                 "request_id": request_id,
                 "action": decision.action.value,
                 "redacted": decision.action == PolicyAction.REDACT,
                 "detections_found": len(decision.detected_threats),
-                "latency_ms": round(latency_ms, 2)
+                "latency_ms": round(latency_ms, 2),
+                "firewall_applied": True,
+                "mode": "PROTECTED",
             }
 
-        # Log transaction to Audit Log & DB
         audit_logger.log_request(
             request_id=request_id,
             client_ip=client_ip,
@@ -98,51 +138,27 @@ class ProxyService:
             original_prompt=combined_prompt,
             decision=decision,
             status_code=status_code,
-            latency_ms=latency_ms
+            latency_ms=latency_ms,
         )
-
         return llm_response
 
     async def _forward_to_llm(self, payload: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
-        """Forward payload to upstream LLM API or return mock response."""
+        """Forward payload to an upstream LLM API or the controlled mock LLM."""
         if settings.MOCK_LLM_MODE or not settings.OPENAI_API_KEY:
-            # Return realistic OpenAI Chat Completion format
-            mock_response = {
-                "id": f"chatcmpl-{uuid.uuid4().hex[:10]}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": payload.get("model", "gpt-3.5-turbo") + "-promptguard-secured",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": (
-                                "Hello! I am your AI Assistant behind PromptGuard Gateway. "
-                                "Your prompt was analyzed, sanitized, and safely processed."
-                            )
-                        },
-                        "finish_reason": "stop"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 30,
-                    "completion_tokens": 25,
-                    "total_tokens": 55
-                }
-            }
-            return mock_response, 200
+            return await mock_llm_service.chat_completion(payload), 200
 
-        # Live upstream HTTP request
         headers = {
             "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
-                resp = await client.post(settings.UPSTREAM_LLM_URL, json=payload, headers=headers)
-                return resp.json(), resp.status_code
-            except Exception as e:
-                return {"error": f"Upstream LLM Connection Failed: {str(e)}"}, 502
+                response = await client.post(
+                    settings.UPSTREAM_LLM_URL, json=payload, headers=headers
+                )
+                return response.json(), response.status_code
+            except httpx.HTTPError:
+                return {"error": "Upstream LLM connection failed."}, 502
+
 
 proxy_service = ProxyService()
