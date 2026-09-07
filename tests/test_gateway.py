@@ -35,8 +35,8 @@ def test_stage_2_credential_scanning():
     assert any(m.entity_type == "AWS_ACCESS_KEY" for m in result.all_matches)
 
     decision = policy_engine.evaluate(prompt, result)
-    assert decision.action == PolicyAction.REDACT
-    assert "[AWS_ACCESS_KEY_REDACTED]" in decision.redacted_prompt
+    assert decision.action == PolicyAction.BLOCK
+    assert decision.highest_classification.value == "RESTRICTED"
 
 def test_stage_3_financial_data():
     prompt = "Charge my card 4532-0123-4567-8910 for subscription."
@@ -154,8 +154,8 @@ def test_generic_api_key_is_redacted():
     decision = policy_engine.evaluate(prompt, result)
 
     assert any(match.entity_type == "GENERIC_API_KEY" for match in result.all_matches)
-    assert decision.action == PolicyAction.REDACT
-    assert "[GENERIC_API_KEY_REDACTED]" in decision.redacted_prompt
+    assert decision.action == PolicyAction.BLOCK
+    assert decision.highest_classification.value == "RESTRICTED"
 
 
 def test_base64_encoded_prompt_injection_is_blocked():
@@ -183,3 +183,22 @@ def test_homoglyph_jailbreak_is_blocked():
 
     assert any(match.entity_type == "OBFUSCATED_JAILBREAK" for match in result.all_matches)
     assert decision.action == PolicyAction.BLOCK
+
+
+def test_text_content_blocks_are_inspected_and_redacted():
+    payload = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "Contact demo@example.test for details."},
+            {"type": "text", "text": "Thanks."},
+        ]}],
+    }
+    response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 200
+    received = response.json()["mock_llm_meta"]["received_messages"][0]["content"]
+    assert received[0]["text"] == "Contact [EMAIL_ADDRESS] for details.\nThanks."
+
+
+def test_invalid_role_and_empty_content_are_rejected():
+    assert client.post("/v1/chat/completions", json={"messages": [{"role": "tool", "content": "x"}]}).status_code == 422
+    assert client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "   "}]}).status_code == 422
