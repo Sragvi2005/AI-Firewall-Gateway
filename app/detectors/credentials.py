@@ -52,6 +52,18 @@ CREDENTIAL_PATTERNS = {
         "placeholder": "[SENDGRID_API_KEY_REDACTED]",
         "desc": "SendGrid Live API Key"
     },
+    "GITHUB_TOKEN": {
+        "pattern": r"\bgh[pousr]_[A-Za-z0-9_]{30,255}\b",
+        "severity": ThreatSeverity.HIGH,
+        "placeholder": "[GITHUB_TOKEN_REDACTED]",
+        "desc": "GitHub personal access token exposed"
+    },
+    "GENERIC_API_KEY": {
+        "pattern": r"(?i)(?:api[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*['\"]?([A-Za-z0-9_./+=-]{20,})['\"]?",
+        "severity": ThreatSeverity.HIGH,
+        "placeholder": "[GENERIC_API_KEY_REDACTED]",
+        "desc": "Generic API key or access token exposed"
+    },
     "HARDCODED_SUPERADMIN": {
         "pattern": r"(?i)(pass(word)?\s*===?\s*['\"]Adm!n@C0mpany2024['\"]|DB_PASS=Pr0d@Root#2024|ROLE_SUPERADMIN)",
         "severity": ThreatSeverity.CRITICAL,
