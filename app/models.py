@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Optional, Dict, Any, Literal, Union
 from datetime import datetime
 from enum import Enum
 
@@ -15,17 +15,50 @@ class ThreatSeverity(str, Enum):
     LOW = "LOW"
     INFO = "INFO"
 
+
+class DataClassification(str, Enum):
+    PUBLIC = "PUBLIC"
+    INTERNAL = "INTERNAL"
+    CONFIDENTIAL = "CONFIDENTIAL"
+    RESTRICTED = "RESTRICTED"
+
+
+class TextContentBlock(BaseModel):
+    """The supported OpenAI-style content block for gateway inspection."""
+    type: Literal["text"]
+    text: str = Field(min_length=1, max_length=20_000)
+
 class ChatMessage(BaseModel):
-    role: str
-    content: str
+    role: Literal["system", "user", "assistant"]
+    content: Union[str, List[TextContentBlock]]
+
+    @model_validator(mode="after")
+    def validate_content(self):
+        if isinstance(self.content, str):
+            if not self.content.strip():
+                raise ValueError("message content must not be empty")
+        elif not self.content:
+            raise ValueError("message content blocks must not be empty")
+        return self
+
+    def text_content(self) -> str:
+        if isinstance(self.content, str):
+            return self.content
+        return "\n".join(block.text for block in self.content)
 
 class ChatCompletionRequest(BaseModel):
     model: str = "gpt-3.5-turbo"
-    messages: List[ChatMessage]
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 1000
+    messages: List[ChatMessage] = Field(min_length=1, max_length=50)
+    temperature: Optional[float] = Field(default=0.7, ge=0, le=2)
+    max_tokens: Optional[int] = Field(default=1000, ge=1, le=4096)
     stream: Optional[bool] = False
     user: Optional[str] = "employee-default"
+
+    @model_validator(mode="after")
+    def validate_total_prompt_size(self):
+        if sum(len(message.text_content()) for message in self.messages) > 20_000:
+            raise ValueError("combined message content exceeds the 20,000 character limit")
+        return self
 
 class InspectionRequest(BaseModel):
     prompt: str
@@ -64,6 +97,8 @@ class PolicyDecision(BaseModel):
     reasons: List[str]
     detected_threats: List[DetectionMatch]
     blocked_by_stage: Optional[str] = None
+    classifications: List[DataClassification] = Field(default_factory=list)
+    highest_classification: DataClassification = DataClassification.PUBLIC
 
 class AuditLogEntry(BaseModel):
     request_id: str
