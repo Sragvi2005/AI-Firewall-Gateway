@@ -33,6 +33,8 @@ async def inspect_prompt(request: InspectionRequest):
         "redacted_prompt": decision.redacted_prompt,
         "reasons": decision.reasons,
         "blocked_by_stage": decision.blocked_by_stage,
+        "classifications": [classification.value for classification in decision.classifications],
+        "highest_classification": decision.highest_classification.value,
         "pipeline": pipeline_res.model_dump(),
     }
 
