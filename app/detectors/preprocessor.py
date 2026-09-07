@@ -1,6 +1,33 @@
-import re
 import base64
-from typing import Tuple, Optional
+import re
+import unicodedata
+from typing import Optional, Tuple
+
+
+ZERO_WIDTH_CHARACTERS = "\u200b\u200c\u200d\u2060\ufeff"
+
+# A deliberately small mapping for characters commonly substituted into attack
+# phrases. It is not used for PII redaction, where preserving exact offsets is
+# essential; it is only used by the blocking intent detector.
+HOMOGLYPH_MAP = str.maketrans({
+    "а": "a", "А": "A", "е": "e", "Е": "E", "і": "i", "І": "I",
+    "о": "o", "О": "O", "р": "p", "Р": "P", "с": "c", "С": "C",
+    "х": "x", "Х": "X", "у": "y", "У": "Y",
+})
+
+
+def normalize_for_intent_detection(text: str) -> Tuple[str, bool]:
+    """Canonicalize text used for blocking-only intent detection.
+
+    The return flag records whether the request contained an obfuscation signal.
+    Keeping this transformation separate from the raw text avoids invalidating
+    PII and credential redaction offsets.
+    """
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = normalized.translate(HOMOGLYPH_MAP)
+    normalized = normalized.translate(str.maketrans("", "", ZERO_WIDTH_CHARACTERS))
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized, normalized != text
 
 def decode_base64_payloads(text: str) -> Tuple[str, Optional[str]]:
     """
