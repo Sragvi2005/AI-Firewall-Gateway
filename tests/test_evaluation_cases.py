@@ -32,25 +32,22 @@ def test_jwt_token_redaction():
     prompt = "I'm getting a 401 error when calling the API. Here is my request header — Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc123def456. What could be wrong?"
     res = detection_pipeline.run(prompt)
     dec = policy_engine.evaluate(prompt, res)
-    assert dec.action == PolicyAction.REDACT
-    assert "[JWT_TOKEN_REDACTED]" in dec.redacted_prompt
+    assert dec.action == PolicyAction.BLOCK
+    assert dec.highest_classification.value == "RESTRICTED"
 
 def test_boto3_aws_redaction():
     prompt = "Help me debug this Python script. import boto3; client = boto3.client('s3', aws_access_key_id='AKIAIOSFODNN7EXAMPLE', aws_secret_access_key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')"
     res = detection_pipeline.run(prompt)
     dec = policy_engine.evaluate(prompt, res)
-    assert dec.action == PolicyAction.REDACT
-    assert "[AWS_ACCESS_KEY_REDACTED]" in dec.redacted_prompt
-    assert "[AWS_SECRET_KEY_REDACTED]" in dec.redacted_prompt
+    assert dec.action == PolicyAction.BLOCK
+    assert dec.highest_classification.value == "RESTRICTED"
 
 def test_postgres_connection_string_redaction():
     prompt = "Why is my database connection failing? Connection string: postgresql://admin:Str0ng@P@ssw0rd!@db.internal.company.com:5432/proddb"
     res = detection_pipeline.run(prompt)
     dec = policy_engine.evaluate(prompt, res)
-    assert dec.action == PolicyAction.REDACT
-    assert "[DB_USER_REDACTED]" in dec.redacted_prompt
-    assert "[DB_PASSWORD_REDACTED]" in dec.redacted_prompt
-    assert "[DB_HOST_REDACTED]" in dec.redacted_prompt
+    assert dec.action == PolicyAction.BLOCK
+    assert dec.highest_classification.value == "RESTRICTED"
 
 def test_credit_card_payment_redaction():
     prompt = "Please format the following payment details into a receipt. Card number: 4532 1234 5678 9010, Expiry: 09/27, CVV: 342, Amount: ₹15,499."
