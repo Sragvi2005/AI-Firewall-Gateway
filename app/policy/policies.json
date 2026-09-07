@@ -1,0 +1,33 @@
+{
+  "default": {"action": "ALLOW", "classification": "PUBLIC"},
+  "policies": {
+    "EMAIL_ADDRESS": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "PHONE_NUMBER": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "NAME": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "DATE_OF_BIRTH": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "DATE": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "LOCATION": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "AADHAAR": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "PAN": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "PASSPORT": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "CREDIT_CARD": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "EXPIRY": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "CVV": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "BANK_ACCOUNT": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "IFSC": {"action": "REDACT", "classification": "CONFIDENTIAL"},
+    "AWS_ACCESS_KEY": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "AWS_SECRET_KEY": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "JWT_TOKEN": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "GITHUB_TOKEN": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "GENERIC_API_KEY": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "DB_USER": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "DB_PASSWORD": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "DB_HOST": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "STRIPE_SECRET_KEY": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "SENDGRID_API_KEY": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "HARDCODED_SUPERADMIN": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "PROMPT_INJECTION": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "JAILBREAK": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "OBFUSCATED_": {"action": "BLOCK", "classification": "RESTRICTED"}
+  }
+}
