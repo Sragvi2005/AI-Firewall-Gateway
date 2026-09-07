@@ -1,103 +1,78 @@
-from typing import List, Dict
-from app.models import PipelineResult, PolicyDecision, PolicyAction, ThreatSeverity, DetectionMatch
+import json
+from pathlib import Path
+from typing import Dict, List
 
-# Exact placeholder tags as requested in user specification
+from app.models import DataClassification, DetectionMatch, PipelineResult, PolicyAction, PolicyDecision
+
 ENTITY_PLACEHOLDERS: Dict[str, str] = {
-    "EMAIL_ADDRESS": "[EMAIL_ADDRESS]",
-    "PHONE_NUMBER": "[PHONE_NUMBER]",
-    "NAME": "[NAME]",
-    "DATE_OF_BIRTH": "[DATE_OF_BIRTH]",
-    "DATE": "[DATE]",
-    "LOCATION": "[LOCATION]",
-    "AADHAAR": "[AADHAAR_REDACTED]",
-    "PAN": "[PAN_REDACTED]",
-    "PASSPORT": "[PASSPORT_REDACTED]",
-    "JWT_TOKEN": "[JWT_TOKEN_REDACTED]",
-    "AWS_ACCESS_KEY": "[AWS_ACCESS_KEY_REDACTED]",
-    "AWS_SECRET_KEY": "[AWS_SECRET_KEY_REDACTED]",
-    "DB_USER": "[DB_USER_REDACTED]",
-    "DB_PASSWORD": "[DB_PASSWORD_REDACTED]",
-    "DB_HOST": "[DB_HOST_REDACTED]",
-    "CREDIT_CARD": "[CREDIT_CARD_REDACTED]",
-    "EXPIRY": "[EXPIRY_REDACTED]",
-    "CVV": "[CVV_REDACTED]",
-    "BANK_ACCOUNT": "[BANK_ACCOUNT_REDACTED]",
-    "IFSC": "[IFSC_REDACTED]",
-    "STRIPE_SECRET_KEY": "[STRIPE_SECRET_KEY_REDACTED]",
-    "SENDGRID_API_KEY": "[SENDGRID_API_KEY_REDACTED]",
-    "GITHUB_TOKEN": "[GITHUB_TOKEN_REDACTED]",
+    "EMAIL_ADDRESS": "[EMAIL_ADDRESS]", "PHONE_NUMBER": "[PHONE_NUMBER]", "NAME": "[NAME]",
+    "DATE_OF_BIRTH": "[DATE_OF_BIRTH]", "DATE": "[DATE]", "LOCATION": "[LOCATION]",
+    "AADHAAR": "[AADHAAR_REDACTED]", "PAN": "[PAN_REDACTED]", "PASSPORT": "[PASSPORT_REDACTED]",
+    "CREDIT_CARD": "[CREDIT_CARD_REDACTED]", "EXPIRY": "[EXPIRY_REDACTED]", "CVV": "[CVV_REDACTED]",
+    "BANK_ACCOUNT": "[BANK_ACCOUNT_REDACTED]", "IFSC": "[IFSC_REDACTED]", "DB_USER": "[DB_USER_REDACTED]",
+    "DB_PASSWORD": "[DB_PASSWORD_REDACTED]", "DB_HOST": "[DB_HOST_REDACTED]",
+    "JWT_TOKEN": "[JWT_TOKEN_REDACTED]", "AWS_ACCESS_KEY": "[AWS_ACCESS_KEY_REDACTED]",
+    "AWS_SECRET_KEY": "[AWS_SECRET_KEY_REDACTED]", "GITHUB_TOKEN": "[GITHUB_TOKEN_REDACTED]",
     "GENERIC_API_KEY": "[GENERIC_API_KEY_REDACTED]",
-    "HARDCODED_SUPERADMIN": "[HARDCODED_SUPERADMIN_REDACTED]"
 }
+ACTION_RANK = {PolicyAction.ALLOW: 0, PolicyAction.REDACT: 1, PolicyAction.BLOCK: 2}
+CLASSIFICATION_RANK = {DataClassification.PUBLIC: 0, DataClassification.INTERNAL: 1, DataClassification.CONFIDENTIAL: 2, DataClassification.RESTRICTED: 3}
+
 
 class PolicyDecisionEngine:
+    """Applies the repository-owned policy document to detection results."""
+
+    def __init__(self, policy_path: Path | None = None):
+        self.policy_path = policy_path or Path(__file__).with_name("policies.json")
+        with self.policy_path.open(encoding="utf-8") as policy_file:
+            self._policy_document = json.load(policy_file)
+
+    def _rule_for(self, entity_type: str) -> Dict[str, str]:
+        policies = self._policy_document["policies"]
+        if entity_type in policies:
+            return policies[entity_type]
+        for key, rule in policies.items():
+            if key.endswith("_") and entity_type.startswith(key):
+                return rule
+        return self._policy_document["default"]
+
     def evaluate(self, original_prompt: str, pipeline_result: PipelineResult) -> PolicyDecision:
-        if pipeline_result.total_detections == 0:
-            return PolicyDecision(
-                action=PolicyAction.ALLOW,
-                original_prompt=original_prompt,
-                redacted_prompt=original_prompt,
-                reasons=["No security threats or sensitive data detected."],
-                detected_threats=[],
-                blocked_by_stage=None
-            )
-
+        action = PolicyAction.ALLOW
+        classifications = set()
         reasons: List[str] = []
-        should_block = False
         blocked_stage = None
-
-        # Check Blocking Triggers:
-        # 1. Intent Stage threats (Prompt Injection, Jailbreak, Bulk PII Dumps, MNPI, Roleplay Extraction, Obfuscation, Injection)
-        # 2. Critical Multi-Secret Config Leaks (Stripe Secret Key, SendGrid API Key, Hardcoded Superadmin)
         for match in pipeline_result.all_matches:
-            if match.stage_id == 4:
-                should_block = True
+            rule = self._rule_for(match.entity_type)
+            match_action = PolicyAction(rule["action"])
+            classification = DataClassification(rule["classification"])
+            classifications.add(classification)
+            if ACTION_RANK[match_action] > ACTION_RANK[action]:
+                action = match_action
+            if match_action == PolicyAction.BLOCK and blocked_stage is None:
                 blocked_stage = match.stage_name
-                reasons.append(f"Blocked due to security policy violation: {match.entity_type} ({match.description})")
-            elif match.severity == ThreatSeverity.CRITICAL:
-                should_block = True
-                blocked_stage = match.stage_name
-                reasons.append(f"Blocked due to CRITICAL threat finding: {match.entity_type} ({match.description})")
+            reasons.append(f"{match.entity_type}: {match_action.value} under {classification.value} policy")
 
-        if should_block:
-            return PolicyDecision(
-                action=PolicyAction.BLOCK,
-                original_prompt=original_prompt,
-                redacted_prompt="[REQUEST BLOCKED BY PROMPTGUARD FIREWALL]",
-                reasons=reasons,
-                detected_threats=pipeline_result.all_matches,
-                blocked_by_stage=blocked_stage
-            )
-
-        # Redaction Path
-        redacted_text = self._apply_redaction(original_prompt, pipeline_result.all_matches)
-        for match in pipeline_result.all_matches:
-            reasons.append(f"Redacted sensitive field: {match.entity_type} ({match.description})")
-
+        ordered = sorted(classifications, key=CLASSIFICATION_RANK.get)
+        highest = ordered[-1] if ordered else DataClassification.PUBLIC
+        if action == PolicyAction.ALLOW:
+            reasons = ["No policy-controlled threats or sensitive data detected."]
         return PolicyDecision(
-            action=PolicyAction.REDACT,
+            action=action,
             original_prompt=original_prompt,
-            redacted_prompt=redacted_text,
+            redacted_prompt=("[REQUEST BLOCKED BY PROMPTGUARD FIREWALL]" if action == PolicyAction.BLOCK else self._apply_redaction(original_prompt, pipeline_result.all_matches)),
             reasons=reasons,
             detected_threats=pipeline_result.all_matches,
-            blocked_by_stage=None
+            blocked_by_stage=blocked_stage,
+            classifications=ordered,
+            highest_classification=highest,
         )
 
     def _apply_redaction(self, text: str, matches: List[DetectionMatch]) -> str:
-        """Replace detected sensitive text spans with specified placeholder tags."""
-        if not matches:
-            return text
-
-        # Sort matches in reverse order of start index to prevent index shifting
-        sorted_matches = sorted(matches, key=lambda m: m.start, reverse=True)
-        redacted = list(text)
-
-        for match in sorted_matches:
+        valid_matches = [match for match in matches if 0 <= match.start < match.end <= len(text)]
+        for match in sorted(valid_matches, key=lambda item: item.start, reverse=True):
             placeholder = ENTITY_PLACEHOLDERS.get(match.entity_type, f"[{match.entity_type.upper()}_REDACTED]")
-            start = match.start
-            end = match.end
-            redacted[start:end] = list(placeholder)
+            text = text[:match.start] + placeholder + text[match.end:]
+        return text
 
-        return "".join(redacted)
 
 policy_engine = PolicyDecisionEngine()
