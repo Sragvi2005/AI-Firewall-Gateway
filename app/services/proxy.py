@@ -44,8 +44,9 @@ class ProxyService:
         blocked_stage = None
 
         for original, target in zip(request.messages, target_payload["messages"]):
-            pipeline_result = detection_pipeline.run(original.content)
-            decision = policy_engine.evaluate(original.content, pipeline_result)
+            message_text = original.text_content()
+            pipeline_result = detection_pipeline.run(message_text)
+            decision = policy_engine.evaluate(message_text, pipeline_result)
             all_threats.extend(decision.detected_threats)
             reasons.extend(decision.reasons)
             redacted_prompt_parts.append(f"{original.role}: {decision.redacted_prompt}")
@@ -53,10 +54,13 @@ class ProxyService:
             if decision.action == PolicyAction.BLOCK and blocked_stage is None:
                 blocked_stage = decision.blocked_by_stage
             elif decision.action == PolicyAction.REDACT:
-                target["content"] = decision.redacted_prompt
+                if isinstance(target["content"], list):
+                    target["content"] = [{"type": "text", "text": decision.redacted_prompt}]
+                else:
+                    target["content"] = decision.redacted_prompt
 
         combined_prompt = "\n".join(
-            f"{message.role}: {message.content}" for message in request.messages
+            f"{message.role}: {message.text_content()}" for message in request.messages
         )
         combined_redacted_prompt = "\n".join(redacted_prompt_parts)
 
@@ -129,6 +133,7 @@ class ProxyService:
                 "latency_ms": round(latency_ms, 2),
                 "firewall_applied": True,
                 "mode": "PROTECTED",
+                "classification": decision.highest_classification.value,
             }
 
         audit_logger.log_request(
