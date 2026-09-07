@@ -19,10 +19,13 @@ class MockLLMService:
 
     async def chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         messages = payload.get("messages", [])
-        received_text = "\n".join(
-            f"{message.get('role', 'user')}: {message.get('content', '')}"
-            for message in messages
-        )
+        def content_text(message: Dict[str, Any]) -> str:
+            content = message.get("content", "")
+            if isinstance(content, list):
+                return "\n".join(block.get("text", "") for block in content if block.get("type") == "text")
+            return str(content)
+
+        received_text = "\n".join(f"{message.get('role', 'user')}: {content_text(message)}" for message in messages)
         normalized = received_text.casefold()
 
         if any(marker in normalized for marker in self._SENSITIVE_MARKERS):
