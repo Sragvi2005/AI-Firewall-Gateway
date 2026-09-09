@@ -1,5 +1,5 @@
-from app.models import DataClassification, DetectionMatch, PipelineResult, PolicyAction, PolicyDecision, ThreatSeverity
-from app.proxy.transformer import BLOCKED_RESPONSE_TEXT, inspect_chat_payload, inspect_llm_response
+from app.models import DataClassification, DetectionMatch, PolicyAction, PolicyDecision, ThreatSeverity
+from app.proxy.transformer import BLOCKED_RESPONSE_TEXT, inspect_chat_payload, inspect_llm_response, inspect_sse_response
 
 
 def decision_for(action: PolicyAction, original: str, redacted: str | None = None) -> PolicyDecision:
@@ -117,3 +117,37 @@ def test_output_firewall_redacts_text_inside_content_blocks():
     assert action == PolicyAction.REDACT
     assert sanitized["choices"][0]["message"]["content"][0]["text"] == "[EMAIL_ADDRESS]"
     assert sanitized["choices"][0]["message"]["content"][1]["type"] == "image_url"
+
+
+def test_streaming_output_is_checked_as_a_whole():
+    body = (
+        'data: {"choices":[{"index":0,"delta":{"content":"alice@"}}]}\n\n'
+        'data: {"choices":[{"index":0,"delta":{"content":"example.com"}}]}\n\n'
+        'data: [DONE]\n\n'
+    )
+
+    sanitized, action, _ = inspect_sse_response(
+        body,
+        lambda text: decision_for(PolicyAction.REDACT, text, "[EMAIL_ADDRESS]")
+        if "alice@example.com" in text
+        else decision_for(PolicyAction.ALLOW, text),
+    )
+
+    assert action == PolicyAction.REDACT
+    assert "[EMAIL_ADDRESS]" in sanitized
+    assert "alice@example.com" not in sanitized
+    assert sanitized.endswith("data: [DONE]\n\n")
+
+
+def test_streaming_output_block_becomes_content_filter_event():
+    body = 'data: {"choices":[{"index":0,"delta":{"content":"secret"}}]}\n\ndata: [DONE]\n\n'
+
+    sanitized, action, _ = inspect_sse_response(
+        body,
+        lambda text: decision_for(PolicyAction.BLOCK, text, "[BLOCKED]"),
+    )
+
+    assert action == PolicyAction.BLOCK
+    assert BLOCKED_RESPONSE_TEXT in sanitized
+    assert '"finish_reason": "content_filter"' in sanitized
+    assert sanitized.endswith("data: [DONE]\n\n")
