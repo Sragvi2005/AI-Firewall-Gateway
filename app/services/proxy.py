@@ -1,7 +1,7 @@
 import time
 import uuid
 import httpx
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from fastapi import HTTPException
 from app.config import settings
 from app.models import ChatCompletionRequest, PolicyAction, PolicyDecision, DataClassification
@@ -37,6 +37,7 @@ class ProxyService:
         self,
         request: ChatCompletionRequest,
         client_ip: str,
+        demo_scenario: Optional[str] = None,
     ) -> Dict[str, Any]:
         if request.stream:
             raise HTTPException(
@@ -149,7 +150,7 @@ class ProxyService:
                 },
             )
 
-        llm_response, status_code = await self._forward_to_llm(target_payload)
+        llm_response, status_code = await self._forward_to_llm(target_payload, demo_scenario=demo_scenario)
         latency_ms = (time.time() - start_time) * 1000
 
         # Output Firewall: inspect every textual assistant response before it is
@@ -235,10 +236,14 @@ class ProxyService:
             return out_decision.redacted_prompt, False, detection_count
         return content, False, 0
 
-    async def _forward_to_llm(self, payload: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+    async def _forward_to_llm(
+        self,
+        payload: Dict[str, Any],
+        demo_scenario: Optional[str] = None,
+    ) -> Tuple[Dict[str, Any], int]:
         """Forward payload to an upstream LLM API or the controlled mock LLM."""
         if settings.MOCK_LLM_MODE or not settings.OPENAI_API_KEY:
-            return await mock_llm_service.chat_completion(payload), 200
+            return await mock_llm_service.chat_completion(payload, scenario=demo_scenario), 200
 
         headers = {
             "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
