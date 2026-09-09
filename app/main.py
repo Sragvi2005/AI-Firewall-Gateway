@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import router
+from app.demo.router import router as demo_router
 from app.config import settings
 from app.detectors.gliner_detector import gliner_singleton
 
@@ -27,6 +28,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(demo_router)
 
 
 @app.get("/")
@@ -42,6 +44,7 @@ def home():
             "inspect_prompt": "/api/inspect",
             "audit_logs": "/api/audit-logs",
             "analytics": "/api/analytics",
+            "virtual_proxy_demo": "/demo",
         },
     }
 
