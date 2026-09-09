@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     ENABLE_STAGE_2_CREDENTIALS: bool = True
     ENABLE_STAGE_3_FINANCIAL: bool = True
     ENABLE_STAGE_4_INTENT: bool = True
+    ENABLE_GLINER: bool = True
+    GLINER_MODEL_NAME: str = "urchade/gliner_small-v2.1"
 
     # Default Policy Actions
     DEFAULT_CREDENTIAL_ACTION: str = "BLOCK"

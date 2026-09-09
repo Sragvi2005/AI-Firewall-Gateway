@@ -1,12 +1,21 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import router
 from app.config import settings
+from app.detectors.gliner_detector import gliner_singleton
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Preload GLiNER model once on application startup
+    gliner_singleton.load_model()
+    yield
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.VERSION,
     description="PromptGuard — Application-layer LLM Data Leakage Prevention Gateway",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
