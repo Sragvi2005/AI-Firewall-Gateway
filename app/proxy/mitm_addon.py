@@ -4,15 +4,14 @@ import json
 import os
 import time
 import uuid
-from typing import Any, Dict, Iterable, Set
+from typing import Any, Dict, Set
 
-from mitmproxy import http, ctx
+from mitmproxy import ctx, http
 
-from app.config import settings
 from app.detectors.pipeline import detection_pipeline
-from app.policy.engine import policy_engine
 from app.models import PolicyAction, PolicyDecision
-from app.proxy.transformer import inspect_chat_payload, inspect_llm_response
+from app.policy.engine import policy_engine
+from app.proxy.transformer import inspect_chat_payload, inspect_llm_response, inspect_sse_response
 
 
 class PromptGuardMITMProxy:
@@ -31,7 +30,10 @@ class PromptGuardMITMProxy:
 
     @staticmethod
     def _read_hosts() -> Set[str]:
-        value = os.getenv("PROMPTGUARD_PROXY_INTERCEPT_HOSTS", "api.openai.com,api.anthropic.com,api.groq.com")
+        value = os.getenv(
+            "PROMPTGUARD_PROXY_INTERCEPT_HOSTS",
+            "api.openai.com,api.anthropic.com,api.groq.com",
+        )
         return {item.strip().lower() for item in value.split(",") if item.strip()}
 
     def _is_intercepted_host(self, host: str) -> bool:
@@ -70,10 +72,6 @@ class PromptGuardMITMProxy:
             {"content-type": "application/json", "x-promptguard-action": "BLOCK"},
         )
 
-    @staticmethod
-    def _request_ip(flow: http.HTTPFlow) -> str:
-        return flow.client_conn.address[0] if flow.client_conn and flow.client_conn.address else "unknown"
-
     def request(self, flow: http.HTTPFlow) -> None:
         if flow.request.method.upper() not in {"POST", "PUT", "PATCH"}:
             return
@@ -96,7 +94,6 @@ class PromptGuardMITMProxy:
             flow.metadata["promptguard_request_id"] = request_id
             flow.metadata["promptguard_action"] = result.action.value
             flow.metadata["promptguard_latency_ms"] = round(latency_ms, 2)
-
             flow.request.headers["x-promptguard-request-id"] = request_id
             flow.request.headers["x-promptguard-action"] = result.action.value
 
@@ -106,14 +103,20 @@ class PromptGuardMITMProxy:
                     "Request blocked by PromptGuard before reaching the LLM provider.",
                     request_id,
                 )
-                ctx.log.info(f"PromptGuard BLOCK {flow.request.host}{flow.request.path} request_id={request_id}")
+                ctx.log.info(
+                    f"PromptGuard BLOCK {flow.request.host}{flow.request.path} request_id={request_id}"
+                )
                 return
 
             if result.action == PolicyAction.REDACT:
                 flow.request.content = json.dumps(result.payload, ensure_ascii=False).encode("utf-8")
-                ctx.log.info(f"PromptGuard REDACT {flow.request.host}{flow.request.path} request_id={request_id}")
+                ctx.log.info(
+                    f"PromptGuard REDACT {flow.request.host}{flow.request.path} request_id={request_id}"
+                )
             else:
-                ctx.log.info(f"PromptGuard ALLOW {flow.request.host}{flow.request.path} request_id={request_id}")
+                ctx.log.info(
+                    f"PromptGuard ALLOW {flow.request.host}{flow.request.path} request_id={request_id}"
+                )
 
         except Exception as exc:
             ctx.log.error(f"PromptGuard request inspection failed: {exc!r}")
@@ -125,34 +128,41 @@ class PromptGuardMITMProxy:
                 )
 
     def response(self, flow: http.HTTPFlow) -> None:
-        if not self._is_intercepted_host(flow.request.host):
-            return
-        if flow.response is None:
+        if not self._is_intercepted_host(flow.request.host) or flow.response is None:
             return
 
         content_type = flow.response.headers.get("content-type", "").lower()
-        if "application/json" not in content_type:
-            return
-
-        try:
-            payload = json.loads(flow.response.get_text(strict=False))
-        except (ValueError, TypeError):
-            return
-        if not isinstance(payload, dict):
-            return
-
         request_id = str(flow.metadata.get("promptguard_request_id", uuid.uuid4()))
+
         try:
+            if "text/event-stream" in content_type:
+                body = flow.response.get_text(strict=False)
+                sanitized, action, _decisions = inspect_sse_response(body, self._inspect_text)
+                flow.response.headers["x-promptguard-output-action"] = action.value
+                flow.response.headers["x-promptguard-request-id"] = request_id
+                if action in {PolicyAction.REDACT, PolicyAction.BLOCK}:
+                    flow.response.content = sanitized.encode("utf-8")
+                    ctx.log.info(
+                        f"PromptGuard OUTPUT {action.value} {flow.request.host}{flow.request.path} request_id={request_id}"
+                    )
+                return
+
+            if "application/json" not in content_type:
+                return
+
+            payload = json.loads(flow.response.get_text(strict=False))
+            if not isinstance(payload, dict):
+                return
+
             sanitized, action, _decisions = inspect_llm_response(payload, self._inspect_text)
             flow.response.headers["x-promptguard-output-action"] = action.value
             flow.response.headers["x-promptguard-request-id"] = request_id
 
             if action in {PolicyAction.REDACT, PolicyAction.BLOCK}:
                 flow.response.content = json.dumps(sanitized, ensure_ascii=False).encode("utf-8")
-                if action == PolicyAction.BLOCK:
-                    ctx.log.info(f"PromptGuard OUTPUT BLOCK {flow.request.host}{flow.request.path} request_id={request_id}")
-                else:
-                    ctx.log.info(f"PromptGuard OUTPUT REDACT {flow.request.host}{flow.request.path} request_id={request_id}")
+                ctx.log.info(
+                    f"PromptGuard OUTPUT {action.value} {flow.request.host}{flow.request.path} request_id={request_id}"
+                )
         except Exception as exc:
             ctx.log.error(f"PromptGuard response inspection failed: {exc!r}")
             if self.fail_closed:
