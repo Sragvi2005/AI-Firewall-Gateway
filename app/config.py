@@ -35,4 +35,10 @@ class Settings(BaseSettings):
     DEFAULT_FINANCIAL_ACTION: str = "REDACT"
     DEFAULT_PII_ACTION: str = "REDACT"
 
+    # Intent Classifier Model Configuration (Option B: Transformer Model)
+    INTENT_CLASSIFIER_BACKEND: str = "transformer"
+    INTENT_TRANSFORMER_MODEL: str = "ProtectAI/deberta-v3-base-prompt-injection-v2"
+    INTENT_MODEL_CONFIDENCE_THRESHOLD: float = 0.65
+    INTENT_MODEL_DEVICE: str = "cpu"
+
 settings = Settings()

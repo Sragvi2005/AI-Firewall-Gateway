@@ -73,7 +73,7 @@ PromptGuard operates a sequential 4-stage inspection pipeline with multi-encodin
 | **Stage 1** | **PII & Identity** | Names, Email addresses, Phone numbers, Dates of Birth, Locations, Indian ID documents (Aadhaar, PAN, Passport) | Microsoft Presidio Analyzer + Regex Pattern Matchers + spaCy NER |
 | **Stage 2** | **Credentials & Secrets** | AWS Access & Secret Keys, JWT tokens, Database connection URIs (User/Pass/Host), Stripe Secret Keys, SendGrid API Keys, Hardcoded Superadmin credentials | Regex Token Scanners + Shannon Entropy / Token Shape Heuristics |
 | **Stage 3** | **Financial & Payment DLP** | Credit Card numbers (Visa, Mastercard, Amex, RuPay), Card Expiry dates, CVVs, Bank Account numbers, IFSC codes | Luhn Algorithm Checksum + Financial Regex Scanners |
-| **Stage 4** | **Adversarial Intent & Jailbreaks** | Prompt Injections (system prompt overrides, delimiter manipulation), Jailbreaks (DAN, Developer Mode), Bulk PII extraction attempts, Material Non-Public Information (MNPI) exfiltration, Roleplay bypasses, Base64/Hex obfuscation, SQL/Shell command injection | Semantic Pattern Classification + Adversarial Signature Rules + Multi-layer Decoders |
+| **Stage 4** | **Adversarial Intent & Jailbreaks** | Prompt Injections (system prompt overrides, delimiter manipulation), Jailbreaks (DAN, Developer Mode), Bulk PII extraction attempts, Material Non-Public Information (MNPI) exfiltration, Roleplay bypasses, Base64/Hex obfuscation, SQL/Shell command injection | Transformer / PyTorch Neural Intent Classification Model + Hugging Face Transformers Pipeline + Obfuscation Decoders |
 
 ---
 
@@ -116,7 +116,8 @@ AI-FIREWALL-GATEWAY/
 │   │   ├── __init__.py
 │   │   ├── credentials.py        # Stage 2: AWS, JWT, DB, API Keys
 │   │   ├── financial.py          # Stage 3: Credit Cards, Luhn, CVV, Bank AC, IFSC
-│   │   ├── intent.py             # Stage 4: Prompt Injection, Jailbreak, MNPI
+│   │   ├── intent.py             # Stage 4: Orchestrator for Intent Detection
+│   │   ├── intent_transformer.py # Stage 4: PyTorch & HuggingFace Transformer Intent Model
 │   │   ├── pii.py                # Stage 1: PII, Presidio, Aadhaar, PAN, Passport
 │   │   ├── pipeline.py           # 4-Stage orchestrator
 │   │   └── preprocessor.py       # Multi-encoding & obfuscation decoder
