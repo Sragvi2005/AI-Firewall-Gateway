@@ -1,0 +1,4 @@
+# PromptGuard network interception proxy environment.
+# mitmproxy 12.2.3 is the current stable release and requires Python >=3.12.
+-r requirements.txt
+mitmproxy==12.2.3
