@@ -276,3 +276,45 @@ def test_gateway_rejects_unsupported_streaming():
     assert response.status_code == 400
     assert "Streaming is currently unsupported" in response.json()["detail"]["error"]
 
+
+def test_gliner_detects_unknown_secret_pattern():
+    prompt = "Here is my secret token: xk99_alpha_bravo_992817263544"
+    result = detection_pipeline.run(prompt)
+    decision = policy_engine.evaluate(prompt, result)
+    assert any(m.entity_type == "GLINER_SECRET" for m in result.all_matches)
+    assert decision.action == PolicyAction.BLOCK
+    assert decision.highest_classification.value == "RESTRICTED"
+
+
+def test_gliner_suppresses_benign_concept_false_positive():
+    prompt = "The application reads an API key from environment variables."
+    result = detection_pipeline.run(prompt)
+    decision = policy_engine.evaluate(prompt, result)
+    assert not any(m.entity_type == "GLINER_SECRET" for m in result.all_matches)
+    assert decision.action == PolicyAction.ALLOW
+
+
+def test_gliner_and_regex_deduplication_single_finding():
+    # Prompt contains standard AWS Key detected by regex
+    prompt = "Here is my AWS Key AKIAIOSFODNN7EXAMPLE for deployment."
+    result = detection_pipeline.run(prompt)
+    aws_matches = [m for m in result.all_matches if "AWS" in m.entity_type or m.entity_type == "GLINER_SECRET"]
+    # Overlapping findings are consolidated into one finding rather than reporting 2 secrets
+    assert len(aws_matches) == 1
+    assert aws_matches[0].entity_type == "AWS_ACCESS_KEY"
+
+
+def test_gliner_disabled_fallback_deterministic_rules():
+    from app.config import settings
+    original_toggle = settings.ENABLE_GLINER
+    try:
+        settings.ENABLE_GLINER = False
+        prompt = "Here is my AWS Key AKIAIOSFODNN7EXAMPLE for deployment."
+        result = detection_pipeline.run(prompt)
+        decision = policy_engine.evaluate(prompt, result)
+        assert decision.action == PolicyAction.BLOCK
+        assert any(m.entity_type == "AWS_ACCESS_KEY" for m in result.all_matches)
+    finally:
+        settings.ENABLE_GLINER = original_toggle
+
+
