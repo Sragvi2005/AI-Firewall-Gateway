@@ -18,6 +18,13 @@ class ProxyService:
         This endpoint is deliberately limited to the controlled demonstration
         environment and provides the baseline for firewall-on/off comparisons.
         """
+        if request.stream:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Streaming is currently unsupported by PromptGuard Gateway. Set stream=False."
+                },
+            )
         llm_response, _ = await self._forward_to_llm(request.model_dump())
         if isinstance(llm_response, dict):
             llm_response["promptguard_meta"] = {
@@ -31,6 +38,13 @@ class ProxyService:
         request: ChatCompletionRequest,
         client_ip: str,
     ) -> Dict[str, Any]:
+        if request.stream:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Streaming is currently unsupported by PromptGuard Gateway. Set stream=False."
+                },
+            )
         start_time = time.time()
         request_id = f"req-{uuid.uuid4().hex[:12]}"
         user_id = request.user or "employee-default"

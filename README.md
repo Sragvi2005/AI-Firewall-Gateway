@@ -264,6 +264,30 @@ Drop-in replacement for OpenAI SDK / LangChain / LlamaIndex.
   }
   ```
 
+- **OpenAI Python SDK Integration**:
+  Point `base_url` to PromptGuard Gateway to protect all LLM requests transparently:
+  ```python
+  from openai import OpenAI
+
+  # Configure client to route via PromptGuard Gateway
+  client = OpenAI(
+      base_url="http://localhost:8000/v1",
+      api_key="your-openai-api-key"  # Or dummy key if gateway runs with MOCK_LLM_MODE=True
+  )
+
+  response = client.chat.completions.create(
+      model="gpt-4o",
+      messages=[{"role": "user", "content": "My email is test@example.com"}],
+      temperature=0.7,
+      max_tokens=1000,
+      stream=False  # Note: streaming (stream=True) is currently unsupported by PromptGuard Gateway
+  )
+  print(response.choices[0].message.content)
+  ```
+
+> [!NOTE]
+> **Stream Handling**: Streaming (`stream=True`) is currently unsupported by PromptGuard Gateway. Requests with `stream=True` will return an HTTP 400 with an explicit error message. Set `stream=False` in your client calls. All standard parameters (`model`, `messages`, `temperature`, `max_tokens`, `user`) are preserved across the proxy.
+
 ---
 
 ### 2. Prompt Inspection Endpoint

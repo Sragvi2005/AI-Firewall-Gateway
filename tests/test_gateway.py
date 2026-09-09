@@ -244,3 +244,35 @@ def test_text_content_blocks_are_inspected_and_redacted():
 def test_invalid_role_and_empty_content_are_rejected():
     assert client.post("/v1/chat/completions", json={"messages": [{"role": "tool", "content": "x"}]}).status_code == 422
     assert client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "   "}]}).status_code == 422
+
+
+def test_gateway_preserves_request_parameters():
+    payload = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Explain binary search in 2 lines."}],
+        "temperature": 0.2,
+        "max_tokens": 150,
+        "user": "custom-agent-99",
+    }
+    response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["promptguard_meta"]["action"] == "ALLOW"
+    # Mock LLM tags model with suffix -mock
+    assert "gpt-4o" in body["model"]
+    # Verify received payload on the LLM side preserved the requested model and messages
+    received_msgs = body["mock_llm_meta"]["received_messages"]
+    assert len(received_msgs) == 1
+    assert received_msgs[0]["content"] == "Explain binary search in 2 lines."
+
+
+def test_gateway_rejects_unsupported_streaming():
+    payload = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Tell me a story."}],
+        "stream": True,
+    }
+    response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 400
+    assert "Streaming is currently unsupported" in response.json()["detail"]["error"]
+
