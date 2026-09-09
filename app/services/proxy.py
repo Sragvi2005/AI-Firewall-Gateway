@@ -243,6 +243,8 @@ class ProxyService:
     ) -> Tuple[Dict[str, Any], int]:
         """Forward payload to an upstream LLM API or the controlled mock LLM."""
         if settings.MOCK_LLM_MODE or not settings.OPENAI_API_KEY:
+            if demo_scenario is None:
+                return await mock_llm_service.chat_completion(payload), 200
             return await mock_llm_service.chat_completion(payload, scenario=demo_scenario), 200
 
         headers = {
