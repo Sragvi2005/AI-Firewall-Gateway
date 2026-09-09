@@ -80,7 +80,10 @@ class ProxyService:
         )
         combined_redacted_prompt = "\n".join(redacted_prompt_parts)
 
-        ordered_classifications = sorted(all_classifications, key=lambda c: {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "RESTRICTED": 3}.get(c.value, 0))
+        ordered_classifications = sorted(
+            all_classifications,
+            key=lambda c: {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "RESTRICTED": 3}.get(c.value, 0),
+        )
         highest_classification = ordered_classifications[-1] if ordered_classifications else DataClassification.PUBLIC
 
         if blocked_stage is not None:
@@ -149,25 +152,45 @@ class ProxyService:
         llm_response, status_code = await self._forward_to_llm(target_payload)
         latency_ms = (time.time() - start_time) * 1000
 
-        # Phase 4: Output Firewall — Inspect actual LLM response before delivering to user
+        # Output Firewall: inspect every textual assistant response before it is
+        # returned to the caller. This supports both OpenAI-style string content
+        # and content-block lists containing text blocks.
         output_action = PolicyAction.ALLOW
         output_detections_count = 0
         if settings.ENABLE_OUTPUT_FIREWALL and isinstance(llm_response, dict) and "choices" in llm_response:
             for choice in llm_response.get("choices", []):
                 message = choice.get("message", {})
                 content = message.get("content", "")
+
                 if isinstance(content, str) and content:
-                    out_pipeline_res = detection_pipeline.run(content)
-                    out_decision = policy_engine.evaluate(content, out_pipeline_res)
-                    output_detections_count += len(out_decision.detected_threats)
-                    if out_decision.action == PolicyAction.BLOCK:
+                    updated_content, block_found, redaction_count = self._inspect_output_text(content)
+                    message["content"] = updated_content
+                    output_detections_count += redaction_count
+                    if block_found:
                         output_action = PolicyAction.BLOCK
-                        message["content"] = "[RESPONSE BLOCKED BY PROMPTGUARD OUTPUT FIREWALL: Sensitive data or policy violation detected in LLM response]"
                         choice["finish_reason"] = "content_filter"
-                    elif out_decision.action == PolicyAction.REDACT:
-                        if output_action != PolicyAction.BLOCK:
+                    elif redaction_count and output_action != PolicyAction.BLOCK:
+                        output_action = PolicyAction.REDACT
+
+                elif isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        block_text = block.get("text")
+                        if not isinstance(block_text, str) or not block_text:
+                            continue
+
+                        updated_text, block_found, redaction_count = self._inspect_output_text(block_text)
+                        block["text"] = updated_text
+                        output_detections_count += redaction_count
+                        if block_found:
+                            output_action = PolicyAction.BLOCK
+                            choice["finish_reason"] = "content_filter"
+                        elif redaction_count and output_action != PolicyAction.BLOCK:
                             output_action = PolicyAction.REDACT
-                        message["content"] = out_decision.redacted_prompt
+
+                    if output_action == PolicyAction.BLOCK:
+                        message["content"] = "[RESPONSE BLOCKED BY PROMPTGUARD OUTPUT FIREWALL: Sensitive data or policy violation detected in LLM response]"
 
         if isinstance(llm_response, dict):
             llm_response["promptguard_meta"] = {
@@ -194,6 +217,23 @@ class ProxyService:
             latency_ms=latency_ms,
         )
         return llm_response
+
+    @staticmethod
+    def _inspect_output_text(content: str) -> Tuple[str, bool, int]:
+        """Inspect one text segment and return sanitized text, blocked flag, and detection count."""
+        out_pipeline_res = detection_pipeline.run(content)
+        out_decision = policy_engine.evaluate(content, out_pipeline_res)
+        detection_count = len(out_decision.detected_threats)
+
+        if out_decision.action == PolicyAction.BLOCK:
+            return (
+                "[RESPONSE BLOCKED BY PROMPTGUARD OUTPUT FIREWALL: Sensitive data or policy violation detected in LLM response]",
+                True,
+                detection_count,
+            )
+        if out_decision.action == PolicyAction.REDACT:
+            return out_decision.redacted_prompt, False, detection_count
+        return content, False, 0
 
     async def _forward_to_llm(self, payload: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
         """Forward payload to an upstream LLM API or the controlled mock LLM."""
