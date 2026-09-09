@@ -33,6 +33,7 @@
     "CONFIDENTIAL_MNPI_LEAK": {"action": "BLOCK", "classification": "RESTRICTED"},
     "INDIRECT_ROLEPLAY_EXTRACTION": {"action": "BLOCK", "classification": "RESTRICTED"},
     "SYSTEM_INSTRUCTION_INJECTION": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "GLINER_SECRET": {"action": "BLOCK", "classification": "RESTRICTED"},
     "OBFUSCATED_": {"action": "BLOCK", "classification": "RESTRICTED"}
   }
 }
