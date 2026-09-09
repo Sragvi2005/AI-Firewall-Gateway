@@ -149,12 +149,35 @@ class ProxyService:
         llm_response, status_code = await self._forward_to_llm(target_payload)
         latency_ms = (time.time() - start_time) * 1000
 
+        # Phase 4: Output Firewall — Inspect actual LLM response before delivering to user
+        output_action = PolicyAction.ALLOW
+        output_detections_count = 0
+        if settings.ENABLE_OUTPUT_FIREWALL and isinstance(llm_response, dict) and "choices" in llm_response:
+            for choice in llm_response.get("choices", []):
+                message = choice.get("message", {})
+                content = message.get("content", "")
+                if isinstance(content, str) and content:
+                    out_pipeline_res = detection_pipeline.run(content)
+                    out_decision = policy_engine.evaluate(content, out_pipeline_res)
+                    output_detections_count += len(out_decision.detected_threats)
+                    if out_decision.action == PolicyAction.BLOCK:
+                        output_action = PolicyAction.BLOCK
+                        message["content"] = "[RESPONSE BLOCKED BY PROMPTGUARD OUTPUT FIREWALL: Sensitive data or policy violation detected in LLM response]"
+                        choice["finish_reason"] = "content_filter"
+                    elif out_decision.action == PolicyAction.REDACT:
+                        if output_action != PolicyAction.BLOCK:
+                            output_action = PolicyAction.REDACT
+                        message["content"] = out_decision.redacted_prompt
+
         if isinstance(llm_response, dict):
             llm_response["promptguard_meta"] = {
                 "request_id": request_id,
                 "action": decision.action.value,
                 "redacted": decision.action == PolicyAction.REDACT,
                 "detections_found": len(decision.detected_threats),
+                "output_firewall_applied": settings.ENABLE_OUTPUT_FIREWALL,
+                "output_action": output_action.value,
+                "output_detections_found": output_detections_count,
                 "latency_ms": round(latency_ms, 2),
                 "firewall_applied": True,
                 "mode": "PROTECTED",
