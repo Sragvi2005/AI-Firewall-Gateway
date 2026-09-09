@@ -4,7 +4,7 @@ import httpx
 from typing import Dict, Any, Tuple
 from fastapi import HTTPException
 from app.config import settings
-from app.models import ChatCompletionRequest, PolicyAction, PolicyDecision
+from app.models import ChatCompletionRequest, PolicyAction, PolicyDecision, DataClassification
 from app.detectors.pipeline import detection_pipeline
 from app.policy.engine import policy_engine
 from app.compliance.audit import audit_logger
@@ -40,6 +40,7 @@ class ProxyService:
         target_payload = request.model_dump()
         all_threats = []
         reasons = []
+        all_classifications = set()
         redacted_prompt_parts = []
         blocked_stage = None
 
@@ -49,6 +50,7 @@ class ProxyService:
             decision = policy_engine.evaluate(message_text, pipeline_result)
             all_threats.extend(decision.detected_threats)
             reasons.extend(decision.reasons)
+            all_classifications.update(decision.classifications)
             redacted_prompt_parts.append(f"{original.role}: {decision.redacted_prompt}")
 
             if decision.action == PolicyAction.BLOCK and blocked_stage is None:
@@ -64,6 +66,9 @@ class ProxyService:
         )
         combined_redacted_prompt = "\n".join(redacted_prompt_parts)
 
+        ordered_classifications = sorted(all_classifications, key=lambda c: {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "RESTRICTED": 3}.get(c.value, 0))
+        highest_classification = ordered_classifications[-1] if ordered_classifications else DataClassification.PUBLIC
+
         if blocked_stage is not None:
             decision = PolicyDecision(
                 action=PolicyAction.BLOCK,
@@ -72,6 +77,8 @@ class ProxyService:
                 reasons=reasons,
                 detected_threats=all_threats,
                 blocked_by_stage=blocked_stage,
+                classifications=ordered_classifications,
+                highest_classification=highest_classification,
             )
         elif all_threats:
             decision = PolicyDecision(
@@ -80,6 +87,8 @@ class ProxyService:
                 redacted_prompt=combined_redacted_prompt,
                 reasons=reasons,
                 detected_threats=all_threats,
+                classifications=ordered_classifications,
+                highest_classification=highest_classification,
             )
         else:
             decision = PolicyDecision(
@@ -88,6 +97,8 @@ class ProxyService:
                 redacted_prompt=combined_prompt,
                 reasons=["No security threats or sensitive data detected."],
                 detected_threats=[],
+                classifications=ordered_classifications,
+                highest_classification=highest_classification,
             )
 
         if decision.action == PolicyAction.BLOCK:

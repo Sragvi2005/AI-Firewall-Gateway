@@ -28,6 +28,11 @@
     "HARDCODED_SUPERADMIN": {"action": "BLOCK", "classification": "RESTRICTED"},
     "PROMPT_INJECTION": {"action": "BLOCK", "classification": "RESTRICTED"},
     "JAILBREAK": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "JAILBREAK_DAN": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "BULK_PII_EXFILTRATION": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "CONFIDENTIAL_MNPI_LEAK": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "INDIRECT_ROLEPLAY_EXTRACTION": {"action": "BLOCK", "classification": "RESTRICTED"},
+    "SYSTEM_INSTRUCTION_INJECTION": {"action": "BLOCK", "classification": "RESTRICTED"},
     "OBFUSCATED_": {"action": "BLOCK", "classification": "RESTRICTED"}
   }
 }
