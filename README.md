@@ -9,41 +9,45 @@
 [![Tests](https://img.shields.io/badge/Tests-38%20Passed-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)]()
 
-**PromptGuard** is an enterprise-grade, application-layer security gateway and Data Leakage Prevention (DLP) firewall designed for Large Language Model (LLM) architectures. It acts as an intelligent reverse-proxy between client applications/users and upstream LLM providers (e.g., OpenAI, Anthropic, or self-hosted LLMs), intercepting prompts in real time to inspect, redact sensitive data, and block malicious adversarial attacks.
+**PromptGuard** is an enterprise-grade application-layer security gateway and Data Leakage Prevention (DLP) firewall designed for Large Language Model (LLM) architectures. It operates as an intelligent reverse-proxy and browser interceptor between client applications/users and upstream LLMs (e.g., OpenAI, Anthropic Claude, or self-hosted LLMs), intercepting prompts in real time to inspect, redact sensitive data, and block malicious adversarial attacks.
 
 ---
 
 ## 📑 Table of Contents
 
-- [Key Features](#-key-features)
-- [Core Architecture & Flow](#-core-architecture--flow)
-- [Multi-Stage Detection Pipeline](#-multi-stage-detection-pipeline)
-- [Policy Decision Engine](#-policy-decision-engine)
-- [Client Interfaces](#-client-interfaces)
-  - [1. PromptGuard Chat UI](#1-promptguard-chat-ui)
-  - [2. Chrome Browser Extension (ChatGPT & Claude Interception)](#2-chrome-browser-extension-chatgpt--claude-interception)
-  - [3. Interactive Security Dashboard](#3-interactive-security-dashboard)
-- [Project Directory Structure](#-project-directory-structure)
+- [✨ Key Features](#-key-features)
+- [🏗️ Core Architecture & Flow](#-core-architecture--flow)
+- [🔍 Multi-Stage Detection Pipeline](#-multi-stage-detection-pipeline)
+- [⚖️ Policy Decision Engine](#-policy-decision-engine)
+- [💻 Client Interfaces & Demos](#-client-interfaces--demos)
+  - [1. Attack Demonstration & Simulation Page (`/demo`)](#1-attack-demonstration--simulation-page-demo)
+  - [2. PromptGuard Chat UI (`/chat`)](#2-promptguard-chat-ui-chat)
+  - [3. Chrome Browser Extension (ChatGPT & Claude Interception)](#3-chrome-browser-extension-chatgpt--claude-interception)
+  - [4. Interactive Security Dashboard (`:8501`)](#4-interactive-security-dashboard-8501)
+- [📁 Project Directory Structure](#-project-directory-structure)
 - [🚀 Quick Start & How to Run](#-quick-start--how-to-run)
   - [Prerequisites](#prerequisites)
   - [1. Installation & Environment Setup](#1-installation--environment-setup)
   - [2. Running the AI Firewall Gateway (Port 8000)](#2-running-the-ai-firewall-gateway-port-8000)
   - [3. Running the Streamlit Security Dashboard (Port 8501)](#3-running-the-streamlit-security-dashboard-port-8501)
   - [4. Installing & Using the Chrome Browser Extension](#4-installing--using-the-chrome-browser-extension)
-- [API Reference](#-api-reference)
+- [📡 API Reference](#-api-reference)
   - [1. Chat UI Endpoint (`POST /api/chat`)](#1-chat-ui-endpoint-post-apichat)
-  - [2. Prompt Inspection Endpoint (`POST /api/inspect`)](#2-prompt-inspection-endpoint-post-apiinspect)
-  - [3. OpenAI-Compatible Chat Proxy (`POST /v1/chat/completions`)](#3-openai-compatible-chat-proxy-post-v1chatcompletions)
-  - [4. Audit Logs (`GET /api/audit-logs`)](#4-audit-logs-get-apiaudit-logs)
-  - [5. Analytics (`GET /api/analytics`)](#5-analytics-get-apianalytics)
-- [Running Automated Tests](#-running-automated-tests)
-- [Audit & Compliance Logging](#-audit--compliance-logging)
+  - [2. Attack Demo Unprotected Endpoint (`POST /api/demo/unprotected`)](#2-attack-demo-unprotected-endpoint-post-apidemounprotected)
+  - [3. Prompt Inspection Endpoint (`POST /api/inspect`)](#3-prompt-inspection-endpoint-post-apiinspect)
+  - [4. OpenAI-Compatible Proxy (`POST /v1/chat/completions`)](#4-openai-compatible-proxy-post-v1chatcompletions)
+  - [5. Audit Logs (`GET /api/audit-logs`)](#5-audit-logs-get-apiaudit-logs)
+  - [6. Analytics (`GET /api/analytics`)](#6-analytics-get-apianalytics)
+- [🧪 Running Automated Tests](#-running-automated-tests)
+- [🔒 Audit & Compliance Logging](#-audit--compliance-logging)
+- [📄 License](#-license)
 
 ---
 
 ## ✨ Key Features
 
-* 🔒 **4-Stage Threat Inspection**: Comprehensive detection covering PII, credentials/API keys, financial data, and jailbreaks/prompt injections.
+* 🔒 **4-Stage Threat Inspection**: Comprehensive detection covering PII/Identity, Credentials & Secrets, Financial Data, and Transformer-based Jailbreaks/Adversarial Intent.
+* 🎮 **Interactive Attack Demonstration Mode**: Built-in side-by-side simulator showing prompt leakage vs. PromptGuard active mitigation.
 * 🧠 **Deep Learning & Transformers**: Integrates PyTorch and Hugging Face transformer models alongside Microsoft Presidio and NLP entity extractors.
 * 🌐 **Browser Extension Interception**: Intercepts prompts in real-time on live LLM platforms like ChatGPT and Claude before submission.
 * 🖥️ **Built-in Chat UI**: Dark-themed ChatGPT-style interface with instant security verdicts, inline badges, and collapsible inspection breakdowns.
@@ -58,7 +62,8 @@
 flowchart LR
     subgraph Clients [Clients & Interceptors]
         Ext[Chrome Extension on ChatGPT / Claude]
-        ChatUI[PromptGuard Chat UI]
+        DemoUI[Attack Demo Page :8000/demo]
+        ChatUI[PromptGuard Chat UI :8000/chat]
         SDK[OpenAI SDK / LangChain / Apps]
     end
 
@@ -112,33 +117,41 @@ The Policy Engine assigns risk severities (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRI
   - `[AADHAAR_REDACTED]`, `[PAN_REDACTED]`, `[PASSPORT_REDACTED]`
   - `[CREDIT_CARD_REDACTED]`, `[EXPIRY_REDACTED]`, `[CVV_REDACTED]`, `[BANK_ACCOUNT_REDACTED]`, `[IFSC_REDACTED]`
   - `[AWS_ACCESS_KEY_REDACTED]`, `[AWS_SECRET_KEY_REDACTED]`, `[JWT_TOKEN_REDACTED]`, `[DB_USER_REDACTED]`, `[DB_PASSWORD_REDACTED]`, `[DB_HOST_REDACTED]`
-- **`BLOCK`**: Malicious adversarial intent (Stage 4) or critical multi-secret exposures (Stripe keys, superadmin passwords) trigger an immediate block. The upstream LLM is never invoked.
+- **`BLOCK`**: Malicious adversarial intent (Stage 4) or critical multi-secret exposures (superadmin passwords, root credentials) trigger an immediate block. The upstream LLM is never invoked.
 
 ---
 
-## 💻 Client Interfaces
+## 💻 Client Interfaces & Demos
 
-### 1. PromptGuard Chat UI
-A standalone web application served directly from the gateway:
+### 1. Attack Demonstration & Simulation Page (`/demo`)
+A dedicated live side-by-side attack visualizer designed for presentations and evaluations:
+* **URL**: `http://localhost:8000/demo`
+* **Features**:
+  * **5 One-Click Attack Scenarios**: PII Leakage, Credential Exposure, Financial Data Leak, Jailbreak Attack, and Obfuscated / Encoded Injections.
+  * **Parallel Execution**: Simulates what happens **WITHOUT PromptGuard** (left panel, red) vs. **WITH PromptGuard** (right panel, green).
+  * **Interactive Pipeline Stages**: Visualizes which stage caught the threat, detection entities, and response times.
+
+### 2. PromptGuard Chat UI (`/chat`)
+A standalone ChatGPT-style application served directly from the gateway:
 * **URL**: `http://localhost:8000/chat`
 * **Features**:
   * Real-time prompt inspection before submission.
   * Inline security status badges (`ALLOW`, `REDACT`, `BLOCK`) on every message.
   * Clickable detail cards showing detected entities, confidence scores, and redaction diffs.
-  * Interactive prompt preset cards to test PII, credentials, financial data, and jailbreaks.
 
-### 2. Chrome Browser Extension (ChatGPT & Claude Interception)
+### 3. Chrome Browser Extension (ChatGPT & Claude Interception)
 A Manifest V3 browser extension that intercepts prompts directly within ChatGPT (`chatgpt.com`, `chat.openai.com`) and Claude (`claude.ai`):
 * **Location**: `extension/` directory.
 * **How it works**:
   1. Catches Enter key or Send button clicks on the chat input box.
-  2. Sends the prompt to `http://localhost:8000/api/inspect`.
-  3. Displays an interactive PromptGuard overlay:
+  2. For Claude (`claude.ai`), uses a specialized ProseMirror bridge running in the `MAIN` execution world to safely read and sanitize contenteditable nodes.
+  3. Sends the prompt to `http://localhost:8000/api/inspect`.
+  4. Displays an interactive PromptGuard overlay:
      * **ALLOW**: Submits directly to the LLM.
      * **REDACT**: Displays original vs. redacted comparison with a **"Send Redacted Prompt"** button.
      * **BLOCK**: Stops submission completely with a clear explanation of the security policy violation.
 
-### 3. Interactive Security Dashboard
+### 4. Interactive Security Dashboard (`:8501`)
 A Streamlit analytics dashboard for Security & Compliance teams:
 * **URL**: `http://localhost:8501`
 * **Features**:
@@ -173,18 +186,21 @@ AI-FIREWALL-GATEWAY/
 │   │   └── engine.py             # Policy Decision Engine (ALLOW / REDACT / BLOCK)
 │   ├── services/
 │   │   └── proxy.py              # Upstream LLM reverse-proxy & mock generator
-│   ├── static/                   # PromptGuard Chat UI static assets
-│   │   ├── chat.js
-│   │   ├── index.html
-│   │   └── styles.css
+│   ├── static/                   # Web interface assets
+│   │   ├── app.js                # Chat UI logic
+│   │   ├── index.html            # Chat UI HTML
+│   │   ├── styles.css            # Chat UI styles
+│   │   ├── demo.html             # Attack Simulation Demo HTML
+│   │   └── demo.js               # Attack Simulation Demo controller
 │   ├── config.py                 # Pydantic configuration & environment settings
 │   ├── logger.py                 # Gateway application logging
 │   ├── main.py                   # FastAPI application initialization & routes
 │   ├── models.py                 # Pydantic data schemas & response models
-│   └── routes.py                 # API route handlers (/api/chat, /api/inspect, /v1/chat/completions)
+│   └── routes.py                 # API route handlers (/api/chat, /demo, /v1/chat/completions)
 ├── extension/                    # Chrome Browser Extension (Manifest V3)
 │   ├── icons/                    # Extension icon assets (16, 48, 128px)
-│   ├── content.js                # Content script for intercepting ChatGPT & Claude
+│   ├── content.js                # Content script for intercepting ChatGPT
+│   ├── claude_bridge.js          # ProseMirror bridge for intercepting Claude.ai
 │   ├── manifest.json             # Extension manifest definition
 │   ├── popup.html                # Extension popup UI
 │   ├── popup.js                  # Extension toggle & health check logic
@@ -262,8 +278,9 @@ PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Once running:
+* **Attack Demo Mode**: [http://localhost:8000/demo](http://localhost:8000/demo)
 * **Chat UI**: [http://localhost:8000/chat](http://localhost:8000/chat)
-* **API Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
+* **API Documentation (Swagger)**: [http://localhost:8000/docs](http://localhost:8000/docs)
 * **Health Check**: [http://localhost:8000/health](http://localhost:8000/health)
 
 ---
@@ -282,12 +299,12 @@ PYTHONPATH=. streamlit run app/dashboard/streamlit_app.py
 
 ### 4. Installing & Using the Chrome Browser Extension
 
-1. Open Google Chrome and go to: `chrome://extensions/`
+1. Open Google Chrome and navigate to: `chrome://extensions/`
 2. Toggle **Developer mode** (top-right corner) to **ON**.
 3. Click the **"Load unpacked"** button in the top-left.
 4. Select the `extension/` folder located in this repository (`AI-Firewall-Gateway/extension`).
 5. Open [ChatGPT](https://chatgpt.com) or [Claude](https://claude.ai).
-6. Try typing a prompt with sensitive information (e.g. `My email is user@test.com and my credit card is 4532...`) or a jailbreak — PromptGuard will intercept the prompt before it reaches the model!
+6. Try typing a prompt with sensitive information (e.g. `My email is user@test.com and my credit card is 4532...`) or a jailbreak attempt — PromptGuard will intercept the prompt before it reaches the model!
 
 > [!NOTE]
 > The Chrome Extension requires the FastAPI gateway to be running on `http://localhost:8000`. The Streamlit dashboard is optional for the extension, but recommended for monitoring logs.
@@ -310,7 +327,21 @@ curl -X POST "http://localhost:8000/api/chat" \
   }'
 ```
 
-### 2. Prompt Inspection Endpoint (`POST /api/inspect`)
+### 2. Attack Demo Unprotected Endpoint (`POST /api/demo/unprotected`)
+Directly passes the prompt to the upstream LLM with zero inspection or redaction (used by the `/demo` page to simulate vulnerability exposure).
+
+```bash
+curl -X POST "http://localhost:8000/api/demo/unprotected" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "user", "content": "Send report to priya.sharma@gmail.com"}
+    ]
+  }'
+```
+
+### 3. Prompt Inspection Endpoint (`POST /api/inspect`)
 Inspects a prompt and returns detected entities, stage details, and firewall actions without invoking any LLM.
 
 ```bash
@@ -321,16 +352,16 @@ curl -X POST "http://localhost:8000/api/inspect" \
   }'
 ```
 
-### 3. OpenAI-Compatible Chat Proxy (`POST /v1/chat/completions`)
+### 4. OpenAI-Compatible Proxy (`POST /v1/chat/completions`)
 Drop-in proxy for standard OpenAI client libraries (`openai.OpenAI(base_url="http://localhost:8000/v1")`).
 
-### 4. Audit Logs (`GET /api/audit-logs`)
+### 5. Audit Logs (`GET /api/audit-logs`)
 Retrieve recorded audit logs with optional filters:
 ```bash
 curl "http://localhost:8000/api/audit-logs?action=BLOCK&limit=20"
 ```
 
-### 5. Analytics (`GET /api/analytics`)
+### 6. Analytics (`GET /api/analytics`)
 Retrieve real-time metrics and stage-by-stage detection counts:
 ```bash
 curl "http://localhost:8000/api/analytics"

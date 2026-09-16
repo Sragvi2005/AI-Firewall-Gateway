@@ -24,7 +24,7 @@
     },
     credentials: {
       name: 'Credential Exposure',
-      prompt: 'Deploy the production build using AWS access key AKIAIOSFODNN7EXAMPLE and secret key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY. The database is at postgres://admin:SuperSecret123@db.internal.company.io:5432/production. Also update the Stripe key sk_live_4eC39HqLyjWDarjtT1zdp7dc.',
+      prompt: 'Deploy the production build using AWS access key AKIAIOSFODNN7EXAMPLE and secret key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY. The database is at postgres://admin:SuperSecret123@db.internal.company.io:5432/production. Also update the Stripe key sk_test_dummy_stripe_key_example_99.',
     },
     financial: {
       name: 'Financial Data Leak',
