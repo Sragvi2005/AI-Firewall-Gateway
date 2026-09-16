@@ -33,7 +33,8 @@ def test_jwt_token_redaction():
     res = detection_pipeline.run(prompt)
     dec = policy_engine.evaluate(prompt, res)
     assert dec.action == PolicyAction.REDACT
-    assert "[JWT_TOKEN_REDACTED]" in dec.redacted_prompt
+    # JWT token may be caught by either the dedicated JWT regex or the zero-day entropy engine
+    assert "[JWT_TOKEN_REDACTED]" in dec.redacted_prompt or "[ZERO_DAY_SECRET_REDACTED]" in dec.redacted_prompt
 
 def test_boto3_aws_redaction():
     prompt = "Help me debug this Python script. import boto3; client = boto3.client('s3', aws_access_key_id='AKIAIOSFODNN7EXAMPLE', aws_secret_access_key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')"

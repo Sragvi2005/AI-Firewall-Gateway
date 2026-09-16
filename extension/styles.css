@@ -1,0 +1,275 @@
+/* ============================================
+   PromptGuard Chrome Extension — Injected CSS
+   Overlay, cards, and animations for content script
+   ============================================ */
+
+/* Overlay Container */
+.promptguard-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  animation: pg-fade-in 0.2s ease-out;
+}
+
+.promptguard-overlay.pg-fade-out {
+  animation: pg-fade-out 0.2s ease-in forwards;
+}
+
+@keyframes pg-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pg-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.pg-overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+/* Card */
+.pg-overlay-card {
+  position: relative;
+  z-index: 1;
+  width: 520px;
+  max-width: 90vw;
+  max-height: 80vh;
+  background: #13132e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: pg-card-enter 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes pg-card-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.pg-overlay-card.pg-allow {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+.pg-overlay-card.pg-redact {
+  border-color: rgba(245, 158, 11, 0.3);
+}
+.pg-overlay-card.pg-block {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* Header */
+.pg-overlay-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pg-overlay-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.pg-overlay-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8eaf0;
+  letter-spacing: -0.2px;
+}
+
+.pg-overlay-subtitle {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.pg-overlay-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  padding: 3px 10px;
+  border-radius: 100px;
+  margin-top: 4px;
+}
+
+.pg-overlay-badge.pg-allow {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+.pg-overlay-badge.pg-redact {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+.pg-overlay-badge.pg-block {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.pg-close-btn {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(255, 255, 255, 0.05);
+  color: #6b7280;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.pg-close-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e8eaf0;
+}
+
+/* Body */
+.pg-overlay-body {
+  padding: 16px 20px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.pg-reason {
+  font-size: 13px;
+  color: #9ba3b5;
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+
+/* Comparison */
+.pg-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pg-compare-col {
+  min-width: 0;
+}
+
+.pg-compare-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.pg-compare-text {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #9ba3b5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.pg-compare-text.pg-original {
+  border-left: 3px solid #6b7280;
+}
+
+.pg-compare-text.pg-sanitized {
+  border-left: 3px solid #fbbf24;
+}
+
+/* Footer */
+.pg-overlay-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 14px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pg-btn {
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pg-btn-proceed {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.25);
+}
+
+.pg-btn-proceed:hover {
+  box-shadow: 0 0 24px rgba(99, 102, 241, 0.4);
+  transform: translateY(-1px);
+}
+
+.pg-btn-cancel {
+  background: rgba(255, 255, 255, 0.05);
+  color: #9ba3b5;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pg-btn-cancel:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8eaf0;
+}
+
+/* Spinner */
+.pg-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255, 255, 255, 0.08);
+  border-top-color: #8b5cf6;
+  border-radius: 50%;
+  animation: pg-spin 0.8s linear infinite;
+  margin: 0 auto;
+}
+
+@keyframes pg-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Scrollbar inside overlay */
+.pg-overlay-body::-webkit-scrollbar {
+  width: 4px;
+}
+.pg-overlay-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pg-overlay-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 100px;
+}

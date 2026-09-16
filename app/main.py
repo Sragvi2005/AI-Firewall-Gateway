@@ -1,5 +1,8 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from app.routes import router
 from app.config import settings
 
@@ -20,6 +23,16 @@ app.add_middleware(
 
 # Include Gateway API routes
 app.include_router(router)
+
+# Mount static files for the Chat UI
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+
+@app.get("/chat")
+def chat_ui():
+    """Serve the PromptGuard interactive Chat UI."""
+    return FileResponse(os.path.join(_static_dir, "index.html"))
 
 @app.get("/")
 def home():
