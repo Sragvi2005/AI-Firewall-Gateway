@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="PromptGuard Demo Mode — See real-time attack simulations with and without AI firewall protection">
+  <title>PromptGuard — Attack Demo Mode</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       PromptGuard Demo Mode — Styles
+       ============================================ */
+
+    *, *::before, *::after {
+      margin: 0; padding: 0; box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #0a0a1a;
+      --bg-secondary: #111127;
+      --bg-card: #161632;
+      --bg-input: #1a1a36;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-hover: rgba(255, 255, 255, 0.12);
+      --text-primary: #e8eaf0;
+      --text-secondary: #9ba3b5;
+      --text-muted: #6b7280;
+      --indigo: #6366f1;
+      --purple: #8b5cf6;
+      --green: #34d399;
+      --green-bg: rgba(52, 211, 153, 0.08);
+      --green-border: rgba(52, 211, 153, 0.2);
+      --red: #f87171;
+      --red-bg: rgba(248, 113, 113, 0.08);
+      --red-border: rgba(248, 113, 113, 0.2);
+      --yellow: #fbbf24;
+      --yellow-bg: rgba(251, 191, 36, 0.08);
+      --yellow-border: rgba(251, 191, 36, 0.2);
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Header */
+    .demo-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 32px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10, 10, 26, 0.95);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .demo-header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .demo-logo {
+      width: 38px; height: 38px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.25);
+    }
+
+    .demo-title {
+      font-size: 18px; font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #e8eaf0, #a5b4fc);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    .demo-subtitle {
+      font-size: 11px; color: var(--text-muted); font-weight: 500;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+
+    .demo-nav-links {
+      display: flex; gap: 8px;
+    }
+
+    .demo-nav-links a {
+      padding: 8px 14px; border-radius: 8px;
+      font-size: 12px; font-weight: 600;
+      text-decoration: none;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      transition: all 0.15s;
+    }
+
+    .demo-nav-links a:hover {
+      background: rgba(99, 102, 241, 0.1);
+      border-color: rgba(99, 102, 241, 0.3);
+      color: #a5b4fc;
+    }
+
+    /* Hero */
+    .demo-hero {
+      text-align: center;
+      padding: 48px 32px 24px;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    .demo-hero h1 {
+      font-size: 32px; font-weight: 800;
+      letter-spacing: -1px;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #f87171, #fbbf24, #34d399, #6366f1);
+      background-size: 300% 300%;
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      animation: heroGradient 6s ease infinite;
+    }
+
+    @keyframes heroGradient {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+
+    .demo-hero p {
+      font-size: 15px; color: var(--text-secondary);
+      line-height: 1.6; max-width: 600px; margin: 0 auto;
+    }
+
+    /* Scenario Cards */
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 0 32px;
+    }
+
+    .scenario-card {
+      padding: 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .scenario-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, transparent, rgba(99, 102, 241, 0.03));
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    .scenario-card:hover {
+      border-color: rgba(99, 102, 241, 0.3);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .scenario-card:hover::before { opacity: 1; }
+
+    .scenario-card.active {
+      border-color: var(--indigo);
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.15);
+    }
+
+    .scenario-icon {
+      font-size: 24px; margin-bottom: 8px;
+    }
+
+    .scenario-name {
+      font-size: 13px; font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .scenario-desc {
+      font-size: 11px; color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Custom Prompt Input */
+    .custom-prompt-section {
+      max-width: 1100px;
+      margin: 16px auto;
+      padding: 0 32px;
+    }
+
+    .custom-prompt-wrapper {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .custom-prompt-input {
+      flex: 1;
+      padding: 12px 16px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      resize: none;
+      transition: border-color 0.2s;
+    }
+
+    .custom-prompt-input:focus {
+      outline: none;
+      border-color: var(--indigo);
+    }
+
+    .custom-prompt-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .run-demo-btn {
+      padding: 12px 24px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border: none;
+      border-radius: 10px;
+      color: white;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .run-demo-btn:hover {
+      box-shadow: 0 4px 24px rgba(99, 102, 241, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .run-demo-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Results Container */
+    .results-container {
+      max-width: 1100px;
+      margin: 32px auto;
+      padding: 0 32px;
+      display: none;
+    }
+
+    .results-container.visible { display: block; }
+
+    .results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .results-header h2 {
+      font-size: 18px; font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+
+    .results-latency {
+      font-size: 12px; color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Side-by-side Panels */
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 768px) {
+      .comparison-grid { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      transition: border-color 0.3s;
+    }
+
+    .panel.unprotected { border-color: var(--red-border); }
+    .panel.protected { border-color: var(--green-border); }
+
+    .panel-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel.unprotected .panel-header {
+      background: var(--red-bg);
+    }
+
+    .panel.protected .panel-header {
+      background: var(--green-bg);
+    }
+
+    .panel-icon { font-size: 22px; }
+
+    .panel-title {
+      font-size: 14px; font-weight: 700;
+    }
+
+    .panel.unprotected .panel-title { color: var(--red); }
+    .panel.protected .panel-title { color: var(--green); }
+
+    .panel-badge {
+      margin-left: auto;
+      font-size: 10px; font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 6px;
+      letter-spacing: 0.5px;
+    }
+
+    .panel.unprotected .panel-badge {
+      background: rgba(248, 113, 113, 0.15); color: var(--red);
+    }
+
+    .panel.protected .panel-badge {
+      background: rgba(52, 211, 153, 0.15); color: var(--green);
+    }
+
+    .panel-body { padding: 20px; }
+
+    .panel-section {
+      margin-bottom: 18px;
+    }
+
+    .panel-section:last-child { margin-bottom: 0; }
+
+    .panel-label {
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.8px;
+      color: var(--text-muted); margin-bottom: 8px;
+    }
+
+    .prompt-box {
+      padding: 14px;
+      border-radius: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .prompt-box.danger {
+      background: var(--red-bg);
+      border: 1px solid var(--red-border);
+      color: #fca5a5;
+    }
+
+    .prompt-box.safe {
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+      color: #6ee7b7;
+    }
+
+    .prompt-box.neutral {
+      background: rgba(99, 102, 241, 0.06);
+      border: 1px solid rgba(99, 102, 241, 0.15);
+      color: #a5b4fc;
+    }
+
+    .prompt-box.blocked {
+      background: rgba(248, 113, 113, 0.06);
+      border: 1px solid var(--red-border);
+      color: var(--red);
+      text-align: center;
+      font-weight: 600;
+    }
+
+    /* LLM Response */
+    .llm-response-box {
+      padding: 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .llm-response-box.danger {
+      background: rgba(248, 113, 113, 0.04);
+      border: 1px solid rgba(248, 113, 113, 0.1);
+      color: #d4d4dc;
+    }
+
+    .llm-response-box.safe {
+      background: rgba(52, 211, 153, 0.04);
+      border: 1px solid rgba(52, 211, 153, 0.1);
+      color: #d4d4dc;
+    }
+
+    /* Detection Details */
+    .detection-list {
+      list-style: none;
+    }
+
+    .detection-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .detection-type {
+      font-weight: 600;
+      color: var(--yellow);
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      min-width: 140px;
+    }
+
+    .detection-desc {
+      color: var(--text-secondary);
+      flex: 1;
+    }
+
+    .detection-severity {
+      font-size: 10px; font-weight: 700;
+      padding: 2px 8px; border-radius: 4px;
+    }
+
+    .severity-CRITICAL { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+    .severity-HIGH { background: rgba(251, 146, 60, 0.15); color: #fb923c; }
+    .severity-MEDIUM { background: rgba(251, 191, 36, 0.15); color: var(--yellow); }
+    .severity-LOW { background: rgba(52, 211, 153, 0.15); color: var(--green); }
+    .severity-INFO { background: rgba(99, 102, 241, 0.15); color: var(--indigo); }
+
+    /* Action Verdict Badge */
+    .verdict-badge {
+      display: inline-flex;
+      align-items: center; gap: 6px;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+
+    .verdict-ALLOW { background: rgba(52, 211, 153, 0.12); color: var(--green); }
+    .verdict-REDACT { background: rgba(251, 191, 36, 0.12); color: var(--yellow); }
+    .verdict-BLOCK { background: rgba(248, 113, 113, 0.12); color: var(--red); }
+    .verdict-VULNERABLE { background: rgba(248, 113, 113, 0.12); color: var(--red); }
+
+    /* Pipeline Stages Visualization */
+    .pipeline-stages {
+      display: flex; gap: 6px;
+      margin-top: 12px;
+    }
+
+    .stage-chip {
+      flex: 1;
+      padding: 8px 6px;
+      border-radius: 8px;
+      text-align: center;
+      font-size: 10px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      transition: all 0.3s;
+    }
+
+    .stage-chip.passed {
+      background: rgba(52, 211, 153, 0.08);
+      border-color: var(--green-border);
+      color: var(--green);
+    }
+
+    .stage-chip.failed {
+      background: var(--red-bg);
+      border-color: var(--red-border);
+      color: var(--red);
+    }
+
+    .stage-chip.skipped {
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-muted);
+    }
+
+    .stage-chip-name {
+      display: block; font-size: 9px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* Loading Spinner */
+    .loading-container {
+      text-align: center; padding: 48px;
+    }
+
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid rgba(99, 102, 241, 0.2);
+      border-top-color: var(--indigo);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 12px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text {
+      font-size: 13px; color: var(--text-secondary);
+    }
+
+    /* Warning Banner */
+    .warning-banner {
+      max-width: 1100px;
+      margin: 0 auto 24px;
+      padding: 12px 20px;
+      background: rgba(248, 113, 113, 0.06);
+      border: 1px solid rgba(248, 113, 113, 0.15);
+      border-radius: 10px;
+      display: flex; align-items: center; gap: 10px;
+      font-size: 12px; color: #fca5a5;
+    }
+
+    .warning-banner span { font-size: 18px; }
+
+    /* Animations */
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .animate-slide-up {
+      animation: slideUp 0.4s ease forwards;
+    }
+
+    /* Footer */
+    .demo-footer {
+      text-align: center;
+      padding: 32px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="demo-header">
+    <div class="demo-header-left">
+      <div class="demo-logo">🛡️</div>
+      <div>
+        <div class="demo-title">PromptGuard Demo</div>
+        <div class="demo-subtitle">Attack Simulation & Mitigation</div>
+      </div>
+    </div>
+    <div class="demo-nav-links">
+      <a href="/chat">Chat UI</a>
+      <a href="/docs">API Docs</a>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section class="demo-hero">
+    <h1>See the Attack. Then See the Shield.</h1>
+    <p>Select an attack scenario below. We'll show you exactly what happens when a prompt reaches an LLM
+       <strong>without protection</strong> — then the same prompt
+       <strong>with PromptGuard's 4-stage pipeline</strong> blocking the threat.</p>
+  </section>
+
+  <!-- Scenario Cards -->
+  <div class="scenario-grid" id="scenario-grid">
+    <div class="scenario-card" data-scenario="pii" tabindex="0">
+      <div class="scenario-icon">🧑</div>
+      <div class="scenario-name">PII Leakage</div>
+      <div class="scenario-desc">Names, emails, phone numbers, Aadhaar, PAN sent to LLM in plaintext</div>
+    </div>
+    <div class="scenario-card" data-scenario="credentials" tabindex="0">
+      <div class="scenario-icon">🔑</div>
+      <div class="scenario-name">Credential Exposure</div>
+      <div class="scenario-desc">AWS keys, JWT tokens, database passwords leaked to the model</div>
+    </div>
+    <div class="scenario-card" data-scenario="financial" tabindex="0">
+      <div class="scenario-icon">💳</div>
+      <div class="scenario-name">Financial Data Leak</div>
+      <div class="scenario-desc">Credit card numbers, CVVs, bank accounts sent unprotected</div>
+    </div>
+    <div class="scenario-card" data-scenario="jailbreak" tabindex="0">
+      <div class="scenario-icon">💀</div>
+      <div class="scenario-name">Jailbreak Attack</div>
+      <div class="scenario-desc">Prompt injection attempting to override LLM guardrails</div>
+    </div>
+    <div class="scenario-card" data-scenario="obfuscation" tabindex="0">
+      <div class="scenario-icon">🎭</div>
+      <div class="scenario-name">Encoded Obfuscation</div>
+      <div class="scenario-desc">Secrets hidden in Base64 encoding to evade basic filters</div>
+    </div>
+  </div>
+
+  <!-- Custom Prompt -->
+  <div class="custom-prompt-section">
+    <div class="custom-prompt-wrapper">
+      <textarea class="custom-prompt-input" id="custom-prompt" rows="2"
+        placeholder="Or type your own attack prompt here and click Run Demo..."></textarea>
+      <button class="run-demo-btn" id="run-demo-btn" disabled>▶ Run Demo</button>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div class="results-container" id="results-container">
+    <!-- Populated by JS -->
+  </div>
+
+  <footer class="demo-footer">
+    PromptGuard — AI Firewall & LLM Data Leakage Prevention Gateway
+  </footer>
+
+  <script src="/static/demo.js"></script>
+</body>
+</html>

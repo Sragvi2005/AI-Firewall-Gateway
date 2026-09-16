@@ -164,6 +164,36 @@ async def get_audit_logs(
     """
     return audit_logger.fetch_logs(limit=limit, action_filter=action, search=search)
 
+@router.post("/api/demo/unprotected")
+async def demo_unprotected(request: ChatCompletionRequest, req: Request):
+    """
+    Demo endpoint — sends the prompt directly to the LLM WITHOUT any pipeline
+    inspection. Used by the Demo Mode page to illustrate the vulnerability
+    before PromptGuard protection is enabled.
+    """
+    payload = request.model_dump()
+    llm_response, status_code = await proxy_service._forward_to_llm(payload)
+
+    # Extract the user-role prompt for display
+    user_prompt = "\n".join(
+        msg.content for msg in request.messages if msg.role == "user"
+    )
+
+    # Extract assistant text
+    assistant_content = ""
+    if isinstance(llm_response, dict) and "choices" in llm_response:
+        choices = llm_response["choices"]
+        if choices and "message" in choices[0]:
+            assistant_content = choices[0]["message"].get("content", "")
+
+    return {
+        "prompt_sent_to_llm": user_prompt,
+        "llm_response": assistant_content,
+        "status_code": status_code,
+        "protected": False,
+        "warning": "⚠️ This prompt was sent to the LLM with NO security inspection. Any PII, credentials, or sensitive data was transmitted in plaintext.",
+    }
+
 @router.get("/api/analytics")
 async def get_analytics():
     """

@@ -34,6 +34,11 @@ def chat_ui():
     """Serve the PromptGuard interactive Chat UI."""
     return FileResponse(os.path.join(_static_dir, "index.html"))
 
+@app.get("/demo")
+def demo_page():
+    """Serve the PromptGuard Attack Demo Mode page."""
+    return FileResponse(os.path.join(_static_dir, "demo.html"))
+
 @app.get("/")
 def home():
     return {

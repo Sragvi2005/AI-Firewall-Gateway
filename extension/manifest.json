@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PromptGuard — AI Firewall",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Intercepts prompts on ChatGPT and Claude, routes them through the PromptGuard AI Firewall for real-time PII redaction, credential detection, and adversarial attack blocking.",
   "permissions": [
     "activeTab",
@@ -14,12 +14,20 @@
     {
       "matches": [
         "https://chatgpt.com/*",
-        "https://chat.openai.com/*",
-        "https://claude.ai/*"
+        "https://chat.openai.com/*"
       ],
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": ["claude_bridge.js", "content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "action": {

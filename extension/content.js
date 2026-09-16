@@ -5,6 +5,9 @@
  * Intercepts prompt submissions, sends them to the local PromptGuard gateway
  * (http://localhost:8000) for 4-stage pipeline inspection, and shows an inline
  * security overlay with the verdict (ALLOW / REDACT / BLOCK).
+ *
+ * On Claude.ai this script runs in the MAIN world alongside claude_bridge.js,
+ * which provides ProseMirror-compatible text read/write helpers.
  */
 
 (function () {
@@ -17,24 +20,41 @@
   let isEnabled = true;
   let isProcessing = false;
   let overlayEl = null;
+  let bypassInterception = false;
+  let listenersAttached = false;
 
-  // Load saved state
-  chrome.storage?.local?.get([STORAGE_KEY], (result) => {
-    isEnabled = result[STORAGE_KEY] !== false;
-  });
+  // Storage API may not be available in MAIN world — wrap safely
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get([STORAGE_KEY], (result) => {
+        isEnabled = result[STORAGE_KEY] !== false;
+      });
+    }
+  } catch (e) { /* MAIN world — no chrome.storage access */ }
 
   // Listen for toggle messages from popup
-  chrome.runtime?.onMessage?.addListener((msg) => {
-    if (msg.type === 'TOGGLE_PROMPTGUARD') {
-      isEnabled = msg.enabled;
-    }
-    if (msg.type === 'GET_STATUS') {
-      chrome.runtime.sendMessage({
-        type: 'STATUS_RESPONSE',
-        enabled: isEnabled,
-        site: detectSite(),
-        processing: isProcessing,
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg.type === 'TOGGLE_PROMPTGUARD') {
+          isEnabled = msg.enabled;
+        }
+        if (msg.type === 'GET_STATUS') {
+          chrome.runtime.sendMessage({
+            type: 'STATUS_RESPONSE',
+            enabled: isEnabled,
+            site: detectSite(),
+            processing: isProcessing,
+          });
+        }
       });
+    }
+  } catch (e) { /* MAIN world — no chrome.runtime access */ }
+
+  // In MAIN world, listen for toggle via custom DOM events
+  window.addEventListener('promptguard-toggle', (e) => {
+    if (e.detail && typeof e.detail.enabled === 'boolean') {
+      isEnabled = e.detail.enabled;
     }
   });
 
@@ -60,7 +80,6 @@
       // ChatGPT uses a textarea with id "prompt-textarea" or a contenteditable div
       const textarea = document.getElementById('prompt-textarea');
       if (textarea) {
-        // Could be a <textarea> or a contenteditable element
         return textarea.value || textarea.innerText || textarea.textContent || '';
       }
       // Fallback: look for contenteditable in the compose area
@@ -69,11 +88,25 @@
     }
 
     if (site === 'claude') {
-      // Claude uses a contenteditable div inside a fieldset
-      const editable = document.querySelector('fieldset [contenteditable="true"]')
-        || document.querySelector('[contenteditable="true"].ProseMirror')
-        || document.querySelector('[contenteditable="true"]');
-      if (editable) return editable.innerText || editable.textContent || '';
+      // Use the Claude bridge if available (MAIN world)
+      if (window.__promptguard_claude) {
+        return window.__promptguard_claude.getText();
+      }
+      // Fallback: direct DOM query with broad selectors
+      const selectors = [
+        '.ProseMirror[contenteditable="true"]',
+        '[data-placeholder][contenteditable="true"]',
+        '[role="textbox"][contenteditable="true"]',
+        'fieldset [contenteditable="true"]',
+        '[contenteditable="true"]',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.innerText || el.textContent || '';
+          if (text.trim()) return text;
+        }
+      }
     }
 
     return '';
@@ -91,6 +124,10 @@
           textarea.innerText = '';
         }
       }
+    }
+
+    if (site === 'claude' && window.__promptguard_claude) {
+      window.__promptguard_claude.clear();
     }
   }
 
@@ -112,12 +149,21 @@
     }
 
     if (site === 'claude') {
-      const editable = document.querySelector('fieldset [contenteditable="true"]')
-        || document.querySelector('[contenteditable="true"].ProseMirror')
-        || document.querySelector('[contenteditable="true"]');
-      if (editable) {
-        editable.innerHTML = `<p>${text}</p>`;
-        editable.dispatchEvent(new Event('input', { bubbles: true }));
+      if (window.__promptguard_claude) {
+        window.__promptguard_claude.setText(text);
+      } else {
+        // Fallback: direct DOM manipulation
+        const editable = document.querySelector('.ProseMirror[contenteditable="true"]')
+          || document.querySelector('[contenteditable="true"]');
+        if (editable) {
+          editable.focus();
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(editable);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          document.execCommand('insertText', false, text);
+        }
       }
     }
   }
@@ -136,7 +182,13 @@
     }
 
     if (site === 'claude') {
+      if (window.__promptguard_claude) {
+        return window.__promptguard_claude.getSendButton();
+      }
+      // Fallback
       return document.querySelector('button[aria-label="Send Message"]')
+        || document.querySelector('button[aria-label="Send message"]')
+        || document.querySelector('button[aria-label="Send"]')
         || document.querySelector('fieldset button:last-of-type');
     }
 
@@ -260,7 +312,7 @@
         setPromptText(originalPrompt);
         setTimeout(() => {
           clickSendButtonDirect();
-        }, 200);
+        }, 300);
       });
     }
 
@@ -271,7 +323,7 @@
         setPromptText(result.redacted_prompt);
         setTimeout(() => {
           clickSendButtonDirect();
-        }, 200);
+        }, 300);
       });
     }
   }
@@ -289,25 +341,31 @@
    * Clicks the send button directly, bypassing our interceptor.
    * We temporarily set a flag so our listener doesn't re-intercept.
    */
-  let bypassInterception = false;
-
   function clickSendButtonDirect() {
     bypassInterception = true;
-    const sendBtn = getSendButton();
-    if (sendBtn) {
-      sendBtn.click();
-    }
-    // Also try pressing Enter on the input
     const site = detectSite();
-    if (site === 'chatgpt') {
-      const textarea = document.getElementById('prompt-textarea');
-      if (textarea) {
-        textarea.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
-        }));
+
+    if (site === 'claude' && window.__promptguard_claude) {
+      window.__promptguard_claude.clickSend();
+    } else {
+      const sendBtn = getSendButton();
+      if (sendBtn) {
+        sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        sendBtn.click();
+      }
+      // Also try pressing Enter on the input for ChatGPT
+      if (site === 'chatgpt') {
+        const textarea = document.getElementById('prompt-textarea');
+        if (textarea) {
+          textarea.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
+          }));
+        }
       }
     }
-    setTimeout(() => { bypassInterception = false; }, 500);
+
+    setTimeout(() => { bypassInterception = false; }, 800);
   }
 
   /* =========================================
@@ -413,6 +471,12 @@
      ========================================= */
 
   function attachListeners() {
+    if (listenersAttached) return;
+    listenersAttached = true;
+
+    const site = detectSite();
+    console.log(`[PromptGuard] Attaching event listeners for ${site}`);
+
     // Intercept send button clicks
     document.addEventListener('click', (e) => {
       if (!isEnabled || isProcessing || bypassInterception) return;
@@ -431,19 +495,24 @@
       if (!isEnabled || isProcessing || bypassInterception) return;
       if (e.key !== 'Enter' || e.shiftKey) return;
 
-      const site = detectSite();
       let isInPromptInput = false;
 
       if (site === 'chatgpt') {
         const textarea = document.getElementById('prompt-textarea');
         const editable = document.querySelector('[contenteditable="true"][data-placeholder]');
-        isInPromptInput = (textarea && textarea.contains(e.target)) || (editable && editable.contains(e.target));
+        isInPromptInput = (textarea && textarea.contains(e.target))
+          || (editable && editable.contains(e.target));
       }
 
       if (site === 'claude') {
-        const editable = document.querySelector('fieldset [contenteditable="true"]')
-          || document.querySelector('[contenteditable="true"].ProseMirror');
-        isInPromptInput = editable && editable.contains(e.target);
+        // Broad detection: any contenteditable that's a ProseMirror or text input
+        const editor = window.__promptguard_claude
+          ? window.__promptguard_claude.getEditor()
+          : document.querySelector('.ProseMirror[contenteditable="true"]')
+            || document.querySelector('[contenteditable="true"]');
+        if (editor) {
+          isInPromptInput = editor.contains(e.target) || e.target === editor;
+        }
       }
 
       if (isInPromptInput) {
@@ -453,6 +522,59 @@
         }
       }
     }, true);
+  }
+
+  /* =========================================
+     MUTATION OBSERVER — Wait for Claude UI
+     ========================================= */
+
+  function waitForEditorAndAttach() {
+    const site = detectSite();
+
+    // For ChatGPT, the textarea is usually present on load
+    if (site === 'chatgpt') {
+      attachListeners();
+      return;
+    }
+
+    // For Claude, the editor may be lazy-rendered — use MutationObserver
+    if (site === 'claude') {
+      const checkEditor = () => {
+        const editor = window.__promptguard_claude
+          ? window.__promptguard_claude.getEditor()
+          : document.querySelector('[contenteditable="true"]');
+        return !!editor;
+      };
+
+      if (checkEditor()) {
+        console.log('[PromptGuard] Claude editor found immediately');
+        attachListeners();
+        return;
+      }
+
+      console.log('[PromptGuard] Waiting for Claude editor to appear...');
+      const observer = new MutationObserver(() => {
+        if (checkEditor()) {
+          console.log('[PromptGuard] Claude editor detected via MutationObserver');
+          observer.disconnect();
+          attachListeners();
+        }
+      });
+
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+
+      // Safety timeout: stop observing after 30 seconds
+      setTimeout(() => {
+        observer.disconnect();
+        if (!listenersAttached) {
+          console.warn('[PromptGuard] Timed out waiting for Claude editor, attaching listeners anyway');
+          attachListeners();
+        }
+      }, 30000);
+    }
   }
 
   /* =========================================
@@ -466,6 +588,180 @@
   }
 
   /* =========================================
+     INJECT CSS (for MAIN world where CSS may
+     not be injected via manifest)
+     ========================================= */
+
+  function injectStyles() {
+    // Check if styles are already present
+    if (document.getElementById('promptguard-injected-styles')) return;
+
+    const style = document.createElement('style');
+    style.id = 'promptguard-injected-styles';
+    style.textContent = `
+      .promptguard-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        animation: pgFadeIn 0.2s ease;
+      }
+      .promptguard-overlay.pg-fade-out {
+        animation: pgFadeOut 0.2s ease forwards;
+      }
+      .pg-overlay-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(4px);
+      }
+      .pg-overlay-card {
+        position: relative;
+        width: 520px;
+        max-width: 90vw;
+        max-height: 80vh;
+        overflow-y: auto;
+        background: #1a1a2e;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        box-shadow: 0 24px 80px rgba(0,0,0,0.5);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #e8eaf0;
+      }
+      .pg-overlay-card.pg-allow { border-color: rgba(52, 211, 153, 0.3); }
+      .pg-overlay-card.pg-redact { border-color: rgba(251, 191, 36, 0.3); }
+      .pg-overlay-card.pg-block { border-color: rgba(248, 113, 113, 0.3); }
+      .pg-overlay-card.pg-analyzing { border-color: rgba(99, 102, 241, 0.3); }
+      .pg-overlay-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 18px 20px 14px;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .pg-overlay-icon { font-size: 28px; flex-shrink: 0; }
+      .pg-overlay-title {
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: -0.3px;
+      }
+      .pg-overlay-subtitle {
+        font-size: 12px;
+        color: #6b7280;
+        margin-top: 2px;
+      }
+      .pg-overlay-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 6px;
+        margin-top: 4px;
+        letter-spacing: 0.5px;
+      }
+      .pg-overlay-badge.pg-allow { background: rgba(52,211,153,0.15); color: #34d399; }
+      .pg-overlay-badge.pg-redact { background: rgba(251,191,36,0.15); color: #fbbf24; }
+      .pg-overlay-badge.pg-block { background: rgba(248,113,113,0.15); color: #f87171; }
+      .pg-close-btn {
+        position: absolute;
+        top: 14px; right: 14px;
+        background: none; border: none;
+        color: #6b7280; font-size: 16px;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+        transition: all 0.15s;
+      }
+      .pg-close-btn:hover { background: rgba(255,255,255,0.06); color: #e8eaf0; }
+      .pg-overlay-body { padding: 16px 20px; }
+      .pg-reason {
+        font-size: 13px;
+        color: #9ba3b5;
+        padding: 6px 0;
+        line-height: 1.5;
+      }
+      .pg-comparison {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .pg-compare-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
+      }
+      .pg-compare-text {
+        font-size: 12px;
+        line-height: 1.6;
+        padding: 10px 12px;
+        border-radius: 8px;
+        word-break: break-word;
+      }
+      .pg-compare-text.pg-original {
+        background: rgba(248,113,113,0.08);
+        border: 1px solid rgba(248,113,113,0.15);
+        color: #fca5a5;
+      }
+      .pg-compare-text.pg-sanitized {
+        background: rgba(52,211,153,0.08);
+        border: 1px solid rgba(52,211,153,0.15);
+        color: #6ee7b7;
+      }
+      .pg-overlay-footer {
+        display: flex;
+        gap: 10px;
+        padding: 14px 20px 18px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+      }
+      .pg-btn {
+        flex: 1;
+        padding: 10px 16px;
+        border: none;
+        border-radius: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s;
+        font-family: inherit;
+      }
+      .pg-btn-proceed {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        color: white;
+      }
+      .pg-btn-proceed:hover {
+        box-shadow: 0 4px 20px rgba(99,102,241,0.3);
+        transform: translateY(-1px);
+      }
+      .pg-btn-cancel {
+        background: rgba(255,255,255,0.06);
+        color: #9ba3b5;
+      }
+      .pg-btn-cancel:hover {
+        background: rgba(255,255,255,0.1);
+        color: #e8eaf0;
+      }
+      .pg-spinner {
+        width: 32px; height: 32px;
+        border: 3px solid rgba(99,102,241,0.2);
+        border-top-color: #6366f1;
+        border-radius: 50%;
+        animation: pgSpin 0.8s linear infinite;
+        margin: 0 auto;
+      }
+      @keyframes pgSpin { to { transform: rotate(360deg); } }
+      @keyframes pgFadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes pgFadeOut { from { opacity: 1; } to { opacity: 0; } }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /* =========================================
      INITIALIZATION
      ========================================= */
 
@@ -474,7 +770,12 @@
     if (site === 'unknown') return;
 
     console.log(`[PromptGuard] Content script loaded on ${site}`);
-    attachListeners();
+
+    // Inject styles (needed for MAIN world where CSS manifest entry may not apply)
+    injectStyles();
+
+    // Wait for the editor to appear and attach listeners
+    waitForEditorAndAttach();
   }
 
   // Wait for page to be ready
