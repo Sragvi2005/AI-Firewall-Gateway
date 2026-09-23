@@ -1,7 +1,7 @@
 /**
  * PromptGuard — Chrome Extension Content Script
  *
- * Injected into ChatGPT (chatgpt.com / chat.openai.com) and Claude (claude.ai).
+ * Injected into ChatGPT, Claude, Gemini, Mistral Le Chat, Groq, and Cohere Coral.
  * Intercepts prompt submissions, sends them to the local PromptGuard gateway
  * (http://localhost:8000) for 4-stage pipeline inspection, and shows an inline
  * security overlay with the verdict (ALLOW / REDACT / BLOCK).
@@ -22,6 +22,7 @@
   let overlayEl = null;
   let bypassInterception = false;
   let listenersAttached = false;
+  let pendingAttachments = [];
 
   // Storage API may not be available in MAIN world — wrap safely
   try {
@@ -36,7 +37,7 @@
   try {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
       chrome.runtime.onMessage.addListener((msg) => {
-        if (msg.type === 'TOGGLE_PROMPTGUARD') {
+        if (msg.type === 'TOGGLE_PROGUARD' || msg.type === 'TOGGLE_PROMPTGUARD') {
           isEnabled = msg.enabled;
         }
         if (msg.type === 'GET_STATUS') {
@@ -59,6 +60,80 @@
   });
 
   /* =========================================
+     MEDIA & ATTACHMENT CAPTURE
+     ========================================= */
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  function readFileAsBase64(file) {
+    return new Promise((resolve) => {
+      if (!file) return resolve(null);
+      // Safety limit: 25MB
+      if (file.size > 25 * 1024 * 1024) {
+        console.warn(`[PromptGuard] File "${file.name}" exceeds 25MB limit, skipping base64 encoding.`);
+        return resolve(null);
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve({
+          filename: file.name || 'unnamed_attachment',
+          content_base64: reader.result, // "data:image/png;base64,..."
+          mime_type: file.type || 'application/octet-stream',
+          size: file.size || 0,
+          timestamp: Date.now(),
+        });
+      };
+      reader.onerror = (err) => {
+        console.warn(`[PromptGuard] Error reading file "${file.name}":`, err);
+        resolve(null);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function addFiles(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    const promises = [];
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      if (file && typeof file === 'object') {
+        // Prevent duplicate file entries by filename & size
+        const exists = pendingAttachments.some(
+          (a) => a.filename === file.name && a.size === file.size
+        );
+        if (!exists) {
+          promises.push(readFileAsBase64(file));
+        }
+      }
+    }
+    const results = await Promise.all(promises);
+    for (const res of results) {
+      if (res && res.content_base64) {
+        pendingAttachments.push(res);
+        console.log(`[PromptGuard] Captured file attachment: ${res.filename} (${formatBytes(res.size)}, ${res.mime_type})`);
+      }
+    }
+  }
+
+  function getActiveAttachments() {
+    // Prune attachments older than 15 minutes
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    pendingAttachments = pendingAttachments.filter((a) => a.timestamp > cutoff);
+    return [...pendingAttachments];
+  }
+
+  function clearAttachments() {
+    pendingAttachments = [];
+  }
+
+
+  /* =========================================
      SITE DETECTION
      ========================================= */
 
@@ -66,6 +141,10 @@
     const host = window.location.hostname;
     if (host.includes('chatgpt.com') || host.includes('chat.openai.com')) return 'chatgpt';
     if (host.includes('claude.ai')) return 'claude';
+    if (host.includes('gemini.google.com')) return 'gemini';
+    if (host.includes('chat.mistral.ai')) return 'mistral';
+    if (host.includes('groq.com')) return 'groq';
+    if (host.includes('coral.cohere.com')) return 'cohere';
     return 'unknown';
   }
 
@@ -109,6 +188,74 @@
       }
     }
 
+    if (site === 'gemini') {
+      // Gemini uses a rich text editor with contenteditable
+      const selectors = [
+        '.ql-editor[contenteditable="true"]',
+        '[contenteditable="true"][aria-label*="prompt"]',
+        '[contenteditable="true"][aria-label*="Enter"]',
+        '.text-input-field [contenteditable="true"]',
+        'rich-textarea [contenteditable="true"]',
+        '[contenteditable="true"]',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.innerText || el.textContent || '';
+          if (text.trim()) return text;
+        }
+      }
+    }
+
+    if (site === 'mistral') {
+      // Mistral Le Chat uses a textarea or contenteditable
+      const selectors = [
+        'textarea[placeholder]',
+        '[contenteditable="true"][role="textbox"]',
+        '[contenteditable="true"]',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.value || el.innerText || el.textContent || '';
+          if (text.trim()) return text;
+        }
+      }
+    }
+
+    if (site === 'groq') {
+      // Groq uses a textarea
+      const selectors = [
+        'textarea[placeholder]',
+        '#chat-input',
+        'textarea',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.value || el.innerText || '';
+          if (text.trim()) return text;
+        }
+      }
+    }
+
+    if (site === 'cohere') {
+      // Cohere Coral uses a textarea or contenteditable
+      const selectors = [
+        'textarea[placeholder]',
+        '[contenteditable="true"][role="textbox"]',
+        '[contenteditable="true"]',
+        'textarea',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = el.value || el.innerText || el.textContent || '';
+          if (text.trim()) return text;
+        }
+      }
+    }
+
     return '';
   }
 
@@ -128,6 +275,26 @@
 
     if (site === 'claude' && window.__promptguard_claude) {
       window.__promptguard_claude.clear();
+    }
+
+    // Generic clear for other sites
+    if (['gemini', 'mistral', 'groq', 'cohere'].includes(site)) {
+      const textarea = document.querySelector('textarea');
+      if (textarea) {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        if (nativeSetter) {
+          nativeSetter.call(textarea, '');
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          textarea.value = '';
+        }
+        return;
+      }
+      const editable = document.querySelector('[contenteditable="true"]');
+      if (editable) {
+        editable.innerText = '';
+        editable.dispatchEvent(new Event('input', { bubbles: true }));
+      }
     }
   }
 
@@ -166,6 +333,32 @@
         }
       }
     }
+
+    // Generic set for other sites
+    if (['gemini', 'mistral', 'groq', 'cohere'].includes(site)) {
+      const textarea = document.querySelector('textarea');
+      if (textarea) {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        if (nativeSetter) {
+          nativeSetter.call(textarea, text);
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          textarea.value = text;
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return;
+      }
+      const editable = document.querySelector('[contenteditable="true"]');
+      if (editable) {
+        editable.focus();
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editable);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('insertText', false, text);
+      }
+    }
   }
 
   /* =========================================
@@ -192,6 +385,35 @@
         || document.querySelector('fieldset button:last-of-type');
     }
 
+    if (site === 'gemini') {
+      return document.querySelector('button[aria-label="Send message"]')
+        || document.querySelector('button[aria-label="Send"]')
+        || document.querySelector('.send-button')
+        || document.querySelector('button[mat-icon-button][aria-label*="Send"]')
+        || document.querySelector('button.send-button');
+    }
+
+    if (site === 'mistral') {
+      return document.querySelector('button[aria-label="Send"]')
+        || document.querySelector('button[aria-label="Send message"]')
+        || document.querySelector('button[type="submit"]')
+        || document.querySelector('form button:last-of-type');
+    }
+
+    if (site === 'groq') {
+      return document.querySelector('button[aria-label="Send"]')
+        || document.querySelector('button[aria-label="Send message"]')
+        || document.querySelector('button[type="submit"]')
+        || document.querySelector('form button:last-of-type');
+    }
+
+    if (site === 'cohere') {
+      return document.querySelector('button[aria-label="Send"]')
+        || document.querySelector('button[aria-label="Send message"]')
+        || document.querySelector('button[type="submit"]')
+        || document.querySelector('form button:last-of-type');
+    }
+
     return null;
   }
 
@@ -199,12 +421,24 @@
      GATEWAY INSPECTION
      ========================================= */
 
-  async function inspectPrompt(promptText) {
+  async function inspectPrompt(promptText, attachments = []) {
     try {
+      const payload = {
+        prompt: promptText || '',
+        user: 'chrome-extension-user',
+      };
+      if (attachments && attachments.length > 0) {
+        payload.attachments = attachments.map((a) => ({
+          filename: a.filename,
+          content_base64: a.content_base64,
+          mime_type: a.mime_type,
+        }));
+      }
+
       const resp = await fetch(INSPECT_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptText, user: 'chrome-extension-user' }),
+        body: JSON.stringify(payload),
       });
 
       if (!resp.ok) {
@@ -222,15 +456,15 @@
      OVERLAY UI
      ========================================= */
 
-  function showOverlay(result, originalPrompt) {
+  function showOverlay(result, originalPrompt, attachments = []) {
     removeOverlay();
 
     const action = result.action;
     const iconMap = { ALLOW: '✅', REDACT: '🟡', BLOCK: '🔴' };
     const titleMap = {
-      ALLOW: 'Prompt Approved — No Threats Detected',
-      REDACT: 'Sensitive Data Detected — Prompt Sanitized',
-      BLOCK: 'Security Threat Detected — Prompt Blocked',
+      ALLOW: 'Prompt & Media Approved — No Threats Detected',
+      REDACT: 'Sensitive Data Detected — Sanitized',
+      BLOCK: 'Security Threat Detected — Blocked',
     };
     const classMap = { ALLOW: 'pg-allow', REDACT: 'pg-redact', BLOCK: 'pg-block' };
 
@@ -238,19 +472,47 @@
     overlayEl.className = 'promptguard-overlay';
     overlayEl.id = 'promptguard-overlay';
 
-    const reasons = (result.reasons || []).map((r) => `<div class="pg-reason">• ${escapeHtml(r)}</div>`).join('');
+    // Format media scanning summary badge & attachment chips if any
+    const mediaScan = result.pipeline?.media_scan;
+    let mediaBadgeHtml = '';
+    const scannedCount = attachments.length || ((mediaScan?.images_scanned || 0) + (mediaScan?.files_scanned || 0));
+    if (scannedCount > 0) {
+      mediaBadgeHtml = `
+        <div class="pg-media-badge">
+          <span>📎</span>
+          <span>${scannedCount} attachment${scannedCount > 1 ? 's' : ''} scanned (OCR & Document Parsing)</span>
+        </div>
+      `;
+      if (attachments.length > 0) {
+        mediaBadgeHtml += `
+          <div class="pg-media-list">
+            ${attachments.map((a) => `<span class="pg-media-chip">📄 ${escapeHtml(a.filename)} <small style="color:#64748b">(${formatBytes(a.size)})</small></span>`).join('')}
+          </div>
+        `;
+      }
+    }
+
+    const reasons = (result.reasons || []).map((r) => {
+      let sourceTag = '';
+      if (r.toLowerCase().includes('media:') || r.toLowerCase().includes('attachment') || r.toLowerCase().includes('image') || r.toLowerCase().includes('file')) {
+        sourceTag = `<span class="pg-source-tag pg-source-media">MEDIA</span>`;
+      } else {
+        sourceTag = `<span class="pg-source-tag">PROMPT</span>`;
+      }
+      return `<div class="pg-reason">• ${sourceTag}${escapeHtml(r)}</div>`;
+    }).join('');
 
     let comparisonHtml = '';
     if (action === 'REDACT') {
       comparisonHtml = `
         <div class="pg-comparison">
           <div class="pg-compare-col">
-            <div class="pg-compare-label">Original</div>
-            <div class="pg-compare-text pg-original">${escapeHtml(originalPrompt)}</div>
+            <div class="pg-compare-label">Original Prompt</div>
+            <div class="pg-compare-text pg-original">${escapeHtml(originalPrompt || '(No text prompt, media attached)')}</div>
           </div>
           <div class="pg-compare-col">
-            <div class="pg-compare-label">Sanitized</div>
-            <div class="pg-compare-text pg-sanitized">${escapeHtml(result.redacted_prompt)}</div>
+            <div class="pg-compare-label">Sanitized Prompt</div>
+            <div class="pg-compare-text pg-sanitized">${escapeHtml(result.redacted_prompt || '(Empty)')}</div>
           </div>
         </div>
       `;
@@ -280,6 +542,7 @@
           <button class="pg-close-btn" id="pg-close-btn">✕</button>
         </div>
         <div class="pg-overlay-body">
+          ${mediaBadgeHtml}
           ${reasons}
           ${comparisonHtml}
         </div>
@@ -302,6 +565,7 @@
     if (backdrop) backdrop.addEventListener('click', removeOverlay);
     if (cancelBtn) cancelBtn.addEventListener('click', () => {
       clearPromptInput();
+      clearAttachments();
       removeOverlay();
     });
 
@@ -309,9 +573,12 @@
       proceedBtn.addEventListener('click', () => {
         removeOverlay();
         // Re-set original text and click send
-        setPromptText(originalPrompt);
+        if (originalPrompt) {
+          setPromptText(originalPrompt);
+        }
         setTimeout(() => {
           clickSendButtonDirect();
+          clearAttachments();
         }, 300);
       });
     }
@@ -323,6 +590,7 @@
         setPromptText(result.redacted_prompt);
         setTimeout(() => {
           clickSendButtonDirect();
+          clearAttachments();
         }, 300);
       });
     }
@@ -354,9 +622,10 @@
         sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
         sendBtn.click();
       }
-      // Also try pressing Enter on the input for ChatGPT
-      if (site === 'chatgpt') {
-        const textarea = document.getElementById('prompt-textarea');
+      // Also try pressing Enter on the input for sites using textarea
+      if (['chatgpt', 'gemini', 'mistral', 'groq', 'cohere'].includes(site)) {
+        const textarea = document.querySelector('textarea')
+          || document.getElementById('prompt-textarea');
         if (textarea) {
           textarea.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
@@ -376,7 +645,10 @@
     if (!isEnabled || isProcessing || bypassInterception) return;
 
     const promptText = getPromptText().trim();
-    if (!promptText) return;
+    const attachments = getActiveAttachments();
+
+    // If there is neither prompt text nor attachments, do not intercept
+    if (!promptText && attachments.length === 0) return;
 
     // Prevent original submission
     e.preventDefault();
@@ -386,10 +658,10 @@
     isProcessing = true;
 
     // Show analyzing state
-    showAnalyzingOverlay();
+    showAnalyzingOverlay(attachments.length);
 
     // Inspect via gateway
-    const result = await inspectPrompt(promptText);
+    const result = await inspectPrompt(promptText, attachments);
 
     if (!result) {
       // Gateway offline — show warning but allow through
@@ -400,16 +672,20 @@
     }
 
     // Show result overlay
-    showOverlay(result, promptText);
+    showOverlay(result, promptText, attachments);
     isProcessing = false;
   }
 
-  function showAnalyzingOverlay() {
+  function showAnalyzingOverlay(attachmentCount = 0) {
     removeOverlay();
 
     overlayEl = document.createElement('div');
     overlayEl.className = 'promptguard-overlay';
     overlayEl.id = 'promptguard-overlay';
+
+    const mediaSubtext = attachmentCount > 0
+      ? `Analyzing prompt & ${attachmentCount} attachment${attachmentCount > 1 ? 's' : ''} (OCR + Docs)`
+      : `Running 4-stage security pipeline`;
 
     overlayEl.innerHTML = `
       <div class="pg-overlay-backdrop"></div>
@@ -417,14 +693,14 @@
         <div class="pg-overlay-header">
           <div class="pg-overlay-icon">🛡️</div>
           <div>
-            <div class="pg-overlay-title">Analyzing Prompt...</div>
-            <div class="pg-overlay-subtitle">Running 4-stage security pipeline</div>
+            <div class="pg-overlay-title">Analyzing Content...</div>
+            <div class="pg-overlay-subtitle">${escapeHtml(mediaSubtext)}</div>
           </div>
         </div>
         <div class="pg-overlay-body" style="text-align: center; padding: 24px;">
           <div class="pg-spinner"></div>
           <div style="margin-top: 12px; color: #9ba3b5; font-size: 12px;">
-            PII · Credentials · Financial · Intent AI
+            PII · Credentials · Financial · OCR & Documents · Intent AI
           </div>
         </div>
       </div>
@@ -477,6 +753,43 @@
     const site = detectSite();
     console.log(`[PromptGuard] Attaching event listeners for ${site}`);
 
+    // Intercept file uploads via <input type="file">
+    document.addEventListener('change', (e) => {
+      if (e.target && (e.target.type === 'file' || e.target.tagName === 'INPUT') && e.target.files && e.target.files.length > 0) {
+        addFiles(e.target.files);
+      }
+    }, true);
+
+    // Intercept drag and drop files
+    document.addEventListener('drop', (e) => {
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        addFiles(e.dataTransfer.files);
+      }
+    }, true);
+
+    // Intercept clipboard paste of images/files
+    document.addEventListener('paste', (e) => {
+      if (e.clipboardData) {
+        const files = [];
+        if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+          for (let i = 0; i < e.clipboardData.files.length; i++) {
+            files.push(e.clipboardData.files[i]);
+          }
+        } else if (e.clipboardData.items) {
+          for (let i = 0; i < e.clipboardData.items.length; i++) {
+            const item = e.clipboardData.items[i];
+            if (item.kind === 'file') {
+              const file = item.getAsFile();
+              if (file) files.push(file);
+            }
+          }
+        }
+        if (files.length > 0) {
+          addFiles(files);
+        }
+      }
+    }, true);
+
     // Intercept send button clicks
     document.addEventListener('click', (e) => {
       if (!isEnabled || isProcessing || bypassInterception) return;
@@ -484,7 +797,8 @@
       const sendBtn = getSendButton();
       if (sendBtn && (e.target === sendBtn || sendBtn.contains(e.target))) {
         const promptText = getPromptText().trim();
-        if (promptText) {
+        const attachments = getActiveAttachments();
+        if (promptText || attachments.length > 0) {
           handleInterception(e);
         }
       }
@@ -515,17 +829,36 @@
         }
       }
 
+      if (site === 'gemini') {
+        const editor = document.querySelector('.ql-editor[contenteditable="true"]')
+          || document.querySelector('rich-textarea [contenteditable="true"]')
+          || document.querySelector('[contenteditable="true"]');
+        if (editor) {
+          isInPromptInput = editor.contains(e.target) || e.target === editor;
+        }
+      }
+
+      if (['mistral', 'groq', 'cohere'].includes(site)) {
+        const textarea = document.querySelector('textarea');
+        const editable = document.querySelector('[contenteditable="true"][role="textbox"]')
+          || document.querySelector('[contenteditable="true"]');
+        isInPromptInput = (textarea && textarea.contains(e.target))
+          || (editable && (editable.contains(e.target) || e.target === editable));
+      }
+
       if (isInPromptInput) {
         const promptText = getPromptText().trim();
-        if (promptText) {
+        const attachments = getActiveAttachments();
+        if (promptText || attachments.length > 0) {
           handleInterception(e);
         }
       }
     }, true);
   }
 
+
   /* =========================================
-     MUTATION OBSERVER — Wait for Claude UI
+     MUTATION OBSERVER — Wait for editor UI
      ========================================= */
 
   function waitForEditorAndAttach() {
@@ -537,25 +870,30 @@
       return;
     }
 
-    // For Claude, the editor may be lazy-rendered — use MutationObserver
-    if (site === 'claude') {
+    // For sites with lazy-rendered editors — use MutationObserver
+    if (['claude', 'gemini', 'mistral', 'groq', 'cohere'].includes(site)) {
       const checkEditor = () => {
-        const editor = window.__promptguard_claude
-          ? window.__promptguard_claude.getEditor()
-          : document.querySelector('[contenteditable="true"]');
-        return !!editor;
+        if (site === 'claude') {
+          const editor = window.__promptguard_claude
+            ? window.__promptguard_claude.getEditor()
+            : document.querySelector('[contenteditable="true"]');
+          return !!editor;
+        }
+        // For other sites, check for textarea or contenteditable
+        return !!document.querySelector('textarea')
+          || !!document.querySelector('[contenteditable="true"]');
       };
 
       if (checkEditor()) {
-        console.log('[PromptGuard] Claude editor found immediately');
+        console.log(`[PromptGuard] ${site} editor found immediately`);
         attachListeners();
         return;
       }
 
-      console.log('[PromptGuard] Waiting for Claude editor to appear...');
+      console.log(`[PromptGuard] Waiting for ${site} editor to appear...`);
       const observer = new MutationObserver(() => {
         if (checkEditor()) {
-          console.log('[PromptGuard] Claude editor detected via MutationObserver');
+          console.log(`[PromptGuard] ${site} editor detected via MutationObserver`);
           observer.disconnect();
           attachListeners();
         }
@@ -570,7 +908,7 @@
       setTimeout(() => {
         observer.disconnect();
         if (!listenersAttached) {
-          console.warn('[PromptGuard] Timed out waiting for Claude editor, attaching listeners anyway');
+          console.warn(`[PromptGuard] Timed out waiting for ${site} editor, attaching listeners anyway`);
           attachListeners();
         }
       }, 30000);
@@ -753,6 +1091,54 @@
         border-radius: 50%;
         animation: pgSpin 0.8s linear infinite;
         margin: 0 auto;
+      }
+      .pg-media-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(99, 102, 241, 0.12);
+        border: 1px solid rgba(99, 102, 241, 0.25);
+        color: #a5b4fc;
+        font-size: 11.5px;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 6px;
+        margin-bottom: 10px;
+      }
+      .pg-media-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+        margin-bottom: 10px;
+      }
+      .pg-media-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        padding: 3px 8px;
+        font-size: 11px;
+        color: #cbd5e1;
+      }
+      .pg-source-tag {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: rgba(99, 102, 241, 0.15);
+        color: #a5b4fc;
+        border: 1px solid rgba(99, 102, 241, 0.3);
+        margin-right: 5px;
+        vertical-align: middle;
+      }
+      .pg-source-tag.pg-source-media {
+        background: rgba(236, 72, 153, 0.15);
+        color: #f472b6;
+        border-color: rgba(236, 72, 153, 0.3);
       }
       @keyframes pgSpin { to { transform: rotate(360deg); } }
       @keyframes pgFadeIn { from { opacity: 0; } to { opacity: 1; } }

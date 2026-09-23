@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PromptGuard — AI Firewall",
-  "version": "1.1.0",
-  "description": "Intercepts prompts on ChatGPT and Claude, routes them through the PromptGuard AI Firewall for real-time PII redaction, credential detection, and adversarial attack blocking.",
+  "version": "2.0.0",
+  "description": "Intercepts prompts on ChatGPT, Claude, Gemini, Mistral, Groq, and Cohere — routes them through the PromptGuard AI Firewall for real-time PII redaction, credential detection, and adversarial attack blocking.",
   "permissions": [
     "activeTab",
     "storage"
@@ -28,6 +28,39 @@
       "css": ["styles.css"],
       "run_at": "document_idle",
       "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chat.mistral.ai/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://console.groq.com/*",
+        "https://groq.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://coral.cohere.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

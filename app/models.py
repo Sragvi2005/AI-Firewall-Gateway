@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
 
@@ -15,21 +15,30 @@ class ThreatSeverity(str, Enum):
     LOW = "LOW"
     INFO = "INFO"
 
+class Attachment(BaseModel):
+    """A file attachment (image, document, etc.) sent with a chat message."""
+    filename: str
+    content_base64: str
+    mime_type: Optional[str] = None
+
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: Union[str, List[Dict[str, Any]]] = ""
+    attachments: Optional[List[Attachment]] = None
 
 class ChatCompletionRequest(BaseModel):
-    model: str = "gpt-3.5-turbo"
+    model: str = ""
     messages: List[ChatMessage]
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 1000
     stream: Optional[bool] = False
     user: Optional[str] = "employee-default"
+    provider: Optional[str] = None  # "openai", "anthropic", "gemini", "groq", "mistral", "cohere", "custom"
 
 class InspectionRequest(BaseModel):
     prompt: str
     user: Optional[str] = "test-user"
+    attachments: Optional[List[Attachment]] = None
 
 class DetectionMatch(BaseModel):
     stage_id: int # 1: PII, 2: Credentials, 3: Financial, 4: Intent
@@ -41,6 +50,17 @@ class DetectionMatch(BaseModel):
     confidence: float # 0.0 to 1.0
     severity: ThreatSeverity = ThreatSeverity.MEDIUM
     description: str
+    source: str = "text"  # "text" or "media:<filename>"
+
+class MediaExtractionInfo(BaseModel):
+    """Info about a single media item that was scanned."""
+    source_type: str         # "image" or "file"
+    filename: str
+    mime_type: str
+    char_count: int = 0
+    success: bool = True
+    error: str = ""
+    method: str = ""
 
 class StageResult(BaseModel):
     stage_id: int
@@ -56,6 +76,7 @@ class PipelineResult(BaseModel):
     has_critical_or_high: bool
     stage_results: List[StageResult]
     all_matches: List[DetectionMatch]
+    media_scan: Optional[Dict[str, Any]] = None  # Summary of media scanning performed
 
 class PolicyDecision(BaseModel):
     action: PolicyAction

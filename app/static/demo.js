@@ -127,7 +127,7 @@
     resultsContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     const requestBody = {
-      model: 'gpt-4o',
+      model: '',
       messages: [{ role: 'user', content: promptText }],
     };
 

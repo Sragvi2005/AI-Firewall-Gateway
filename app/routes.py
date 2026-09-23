@@ -1,14 +1,61 @@
 import time
 import uuid
 from fastapi import APIRouter, Request, Query
-from typing import Optional, Dict, Any
-from app.models import ChatCompletionRequest, InspectionRequest, PolicyAction
-from app.services.proxy import proxy_service
+from typing import Optional, Dict, Any, List
+from app.models import ChatCompletionRequest, InspectionRequest, PolicyAction, Attachment
+from app.services.proxy import proxy_service, _resolve_provider, _resolve_model
 from app.detectors.pipeline import detection_pipeline
 from app.policy.engine import policy_engine
 from app.compliance.audit import audit_logger
 
 router = APIRouter()
+
+
+def _extract_text_from_content(content) -> str:
+    """
+    Extract plain text from a message's content field.
+    Handles both plain string and multimodal content array formats.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # Multimodal content: [{type: "text", text: "..."}, {type: "image_url", ...}]
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text_parts.append(part.get("text", ""))
+        return "\n".join(text_parts)
+    return str(content) if content else ""
+
+
+def _collect_attachments(messages) -> List[dict]:
+    """
+    Collect all attachments from message objects for media scanning.
+    Returns a list of attachment dicts suitable for the pipeline.
+    """
+    attachments = []
+    for msg in messages:
+        if hasattr(msg, 'attachments') and msg.attachments:
+            for att in msg.attachments:
+                attachments.append({
+                    "filename": att.filename,
+                    "content_base64": att.content_base64,
+                    "mime_type": att.mime_type,
+                })
+        # Also extract base64 images from multimodal content arrays
+        if hasattr(msg, 'content') and isinstance(msg.content, list):
+            for part in msg.content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image_url = part.get("image_url", {})
+                    url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+                    if url.startswith("data:"):
+                        attachments.append({
+                            "filename": "inline_image",
+                            "content_base64": url,
+                            "mime_type": "image/png",
+                        })
+    return attachments
+
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, req: Request):
@@ -26,22 +73,33 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
     Runs the 4-stage pipeline, evaluates the policy decision, forwards to the
     upstream LLM (or mock), logs the audit, and returns both the LLM response
     and the full security analysis in one call.
+
+    Supports text, file attachments, and inline images for media scanning.
     """
     start_time = time.time()
     request_id = f"req-{uuid.uuid4().hex[:12]}"
     client_ip = req.client.host if req.client else "127.0.0.1"
     user_id = request.user or "chat-ui-user"
 
+    # Resolve provider and model
+    provider = _resolve_provider(request.provider)
+    model = _resolve_model(request.model, provider)
+
     # Extract the user-role prompt text for pipeline analysis
     user_prompt = "\n".join(
-        msg.content for msg in request.messages if msg.role == "user"
+        _extract_text_from_content(msg.content)
+        for msg in request.messages if msg.role == "user"
     )
     combined_prompt = "\n".join(
-        f"{msg.role}: {msg.content}" for msg in request.messages
+        f"{msg.role}: {_extract_text_from_content(msg.content)}"
+        for msg in request.messages
     )
 
-    # 1. Run 4-stage detection pipeline
-    pipeline_result = detection_pipeline.run(user_prompt)
+    # Collect all attachments (file uploads + inline base64 images)
+    all_attachments = _collect_attachments(request.messages)
+
+    # 1. Run 4-stage detection pipeline (now with media scanning)
+    pipeline_result = detection_pipeline.run(user_prompt, attachments=all_attachments)
 
     # 2. Policy Decision
     decision = policy_engine.evaluate(user_prompt, pipeline_result)
@@ -56,6 +114,7 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
         "pipeline": {
             "total_detections": pipeline_result.total_detections,
             "highest_severity": pipeline_result.highest_severity.value,
+            "media_scan": pipeline_result.media_scan,
             "stages": [
                 {
                     "stage_id": s.stage_id,
@@ -70,6 +129,7 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
                             "confidence": m.confidence,
                             "severity": m.severity.value,
                             "description": m.description,
+                            "source": m.source,
                         }
                         for m in s.matches
                     ],
@@ -101,14 +161,30 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
 
     # 4b. If ALLOW or REDACT — forward (possibly sanitized) payload to LLM
     target_payload = request.model_dump()
+    target_payload["model"] = model  # Use resolved model
+
+    # Strip attachments from the payload before forwarding to LLM
+    # (attachments are for gateway inspection only, not sent to upstream LLMs)
+    for msg in target_payload.get("messages", []):
+        msg.pop("attachments", None)
+
     if decision.action == PolicyAction.REDACT:
         for msg in target_payload.get("messages", []):
             if msg.get("role") == "user":
-                msg["content"] = policy_engine._apply_redaction(
-                    msg["content"], pipeline_result.all_matches
-                )
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    msg["content"] = policy_engine._apply_redaction(
+                        content, pipeline_result.all_matches
+                    )
+                elif isinstance(content, list):
+                    # Redact text parts within multimodal content
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            part["text"] = policy_engine._apply_redaction(
+                                part.get("text", ""), pipeline_result.all_matches
+                            )
 
-    llm_response, status_code = await proxy_service._forward_to_llm(target_payload)
+    llm_response, status_code = await proxy_service._forward_to_llm(target_payload, provider)
     latency_ms = (time.time() - start_time) * 1000
 
     # Extract assistant text from LLM response
@@ -141,8 +217,21 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
 async def inspect_prompt(request: InspectionRequest):
     """
     Inspect a prompt against all 4 stages of the PromptGuard pipeline without calling the upstream LLM.
+    Now supports optional file attachments for media scanning.
     """
-    pipeline_res = detection_pipeline.run(request.prompt)
+    # Convert attachments to dicts for pipeline
+    attachment_dicts = None
+    if request.attachments:
+        attachment_dicts = [
+            {
+                "filename": att.filename,
+                "content_base64": att.content_base64,
+                "mime_type": att.mime_type,
+            }
+            for att in request.attachments
+        ]
+
+    pipeline_res = detection_pipeline.run(request.prompt, attachments=attachment_dicts)
     decision = policy_engine.evaluate(request.prompt, pipeline_res)
     return {
         "prompt": request.prompt,
@@ -176,7 +265,8 @@ async def demo_unprotected(request: ChatCompletionRequest, req: Request):
 
     # Extract the user-role prompt for display
     user_prompt = "\n".join(
-        msg.content for msg in request.messages if msg.role == "user"
+        _extract_text_from_content(msg.content)
+        for msg in request.messages if msg.role == "user"
     )
 
     # Extract assistant text

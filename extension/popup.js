@@ -72,6 +72,18 @@
       } else if (url.includes('claude.ai')) {
         currentSite.textContent = '🟠 Claude';
         currentSite.style.color = '#fbbf24';
+      } else if (url.includes('gemini.google.com')) {
+        currentSite.textContent = '💎 Gemini';
+        currentSite.style.color = '#60a5fa';
+      } else if (url.includes('chat.mistral.ai')) {
+        currentSite.textContent = '🌀 Mistral';
+        currentSite.style.color = '#f97316';
+      } else if (url.includes('groq.com')) {
+        currentSite.textContent = '⚡ Groq';
+        currentSite.style.color = '#a78bfa';
+      } else if (url.includes('coral.cohere.com')) {
+        currentSite.textContent = '🪸 Cohere';
+        currentSite.style.color = '#f472b6';
       } else {
         currentSite.textContent = 'Not an LLM site';
         currentSite.style.color = '#6b7280';
