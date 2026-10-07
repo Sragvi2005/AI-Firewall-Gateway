@@ -23,6 +23,8 @@
   let bypassInterception = false;
   let listenersAttached = false;
   let pendingAttachments = [];
+  // Track in-progress FileReader promises so handleInterception can await them
+  let pendingReadPromises = [];
 
   // Storage API may not be available in MAIN world — wrap safely
   try {
@@ -112,13 +114,21 @@
         }
       }
     }
-    const results = await Promise.all(promises);
-    for (const res of results) {
-      if (res && res.content_base64) {
-        pendingAttachments.push(res);
-        console.log(`[PromptGuard] Captured file attachment: ${res.filename} (${formatBytes(res.size)}, ${res.mime_type})`);
+    if (promises.length === 0) return;
+
+    // Register this batch so handleInterception can await completion
+    const batchPromise = Promise.all(promises).then((results) => {
+      for (const res of results) {
+        if (res && res.content_base64) {
+          pendingAttachments.push(res);
+          console.log(`[PromptGuard] Captured file attachment: ${res.filename} (${formatBytes(res.size)}, ${res.mime_type})`);
+        }
       }
-    }
+    });
+    pendingReadPromises.push(batchPromise);
+    await batchPromise;
+    // Clean up resolved promises
+    pendingReadPromises = pendingReadPromises.filter((p) => p !== batchPromise);
   }
 
   function getActiveAttachments() {
@@ -743,11 +753,104 @@
      INTERCEPTION LOGIC
      ========================================= */
 
+  /**
+   * Scan the composer/chat area for visible image previews (base64 or blob URLs).
+   * This is a fallback for when paste/drop events weren't captured in time.
+   */
+  async function captureComposerImages() {
+    const captured = [];
+    // Selectors for image preview containers used by ChatGPT, Claude, Gemini, etc.
+    const previewImgSelectors = [
+      'form img[src^="data:"]',
+      'form img[src^="blob:"]',
+      '#thread-form img[src^="data:"]',
+      '#thread-form img[src^="blob:"]',
+      '[class*="composer"] img[src^="data:"]',
+      '[class*="composer"] img[src^="blob:"]',
+      '[class*="attachment"] img[src^="data:"]',
+      '[class*="attachment"] img[src^="blob:"]',
+      '[class*="upload"] img[src^="data:"]',
+      '[class*="upload"] img[src^="blob:"]',
+      '[class*="preview"] img[src^="data:"]',
+      '[class*="preview"] img[src^="blob:"]',
+      '[data-testid*="attachment"] img',
+      '[data-testid*="upload"] img',
+    ];
+
+    const seen = new Set(pendingAttachments.map((a) => a.content_base64.slice(0, 80)));
+
+    for (const sel of previewImgSelectors) {
+      const imgs = document.querySelectorAll(sel);
+      for (const img of imgs) {
+        const src = img.src || img.getAttribute('src') || '';
+        if (!src) continue;
+        const key = src.slice(0, 80);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        if (src.startsWith('data:')) {
+          // Inline base64 image — use directly
+          const mimeMatch = src.match(/^data:([^;]+);/);
+          const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+          const ext = mime.split('/')[1] || 'png';
+          captured.push({
+            filename: `preview_image.${ext}`,
+            content_base64: src,
+            mime_type: mime,
+            size: src.length,
+            timestamp: Date.now(),
+          });
+          console.log(`[PromptGuard] Captured inline preview image (data URI, ${mime})`);
+        } else if (src.startsWith('blob:')) {
+          // Blob URL — fetch and convert to base64
+          try {
+            const resp = await fetch(src);
+            const blob = await resp.blob();
+            const mime = blob.type || 'image/png';
+            const ext = mime.split('/')[1] || 'png';
+            const b64 = await new Promise((res) => {
+              const reader = new FileReader();
+              reader.onload = () => res(reader.result);
+              reader.readAsDataURL(blob);
+            });
+            captured.push({
+              filename: `preview_image.${ext}`,
+              content_base64: b64,
+              mime_type: mime,
+              size: blob.size,
+              timestamp: Date.now(),
+            });
+            console.log(`[PromptGuard] Captured blob preview image (${mime}, ${formatBytes(blob.size)})`);
+          } catch (err) {
+            console.warn('[PromptGuard] Failed to fetch blob image:', err);
+          }
+        }
+      }
+    }
+    return captured;
+  }
+
   async function handleInterception(e) {
     if (!isEnabled || isProcessing || bypassInterception) return;
 
     const promptText = getPromptText().trim();
-    const attachments = getActiveAttachments();
+
+    // Wait for any in-progress FileReader operations (e.g. paste just happened)
+    if (pendingReadPromises.length > 0) {
+      try { await Promise.allSettled(pendingReadPromises); } catch (_) {}
+    }
+
+    let attachments = getActiveAttachments();
+
+    // Fallback: scan the DOM for image previews in the composer area
+    // (covers cases where paste event wasn't captured or FileReader was too slow)
+    if (attachments.length === 0) {
+      const domImages = await captureComposerImages();
+      if (domImages.length > 0) {
+        pendingAttachments.push(...domImages);
+        attachments = getActiveAttachments();
+      }
+    }
 
     // If there is neither prompt text nor attachments, do not intercept
     if (!promptText && attachments.length === 0) return;
@@ -882,11 +985,22 @@
             const item = e.clipboardData.items[i];
             if (item.kind === 'file') {
               const file = item.getAsFile();
-              if (file) files.push(file);
+              if (file) {
+                // Give clipboard images a proper filename+extension if missing
+                if (!file.name && file.type) {
+                  const ext = file.type.split('/')[1] || 'png';
+                  // Wrap in a new File with a proper name
+                  const namedFile = new File([file], `clipboard_image.${ext}`, { type: file.type });
+                  files.push(namedFile);
+                } else {
+                  files.push(file);
+                }
+              }
             }
           }
         }
         if (files.length > 0) {
+          console.log(`[PromptGuard] Paste captured ${files.length} file(s) from clipboard`);
           addFiles(files);
         }
       }
