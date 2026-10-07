@@ -830,16 +830,25 @@
     return captured;
   }
 
-  async function handleInterception(e) {
-    if (!isEnabled || isProcessing || bypassInterception) return;
-
-    const promptText = getPromptText().trim();
-
-    // Wait for any in-progress FileReader operations (e.g. paste just happened)
+  /**
+   * IMPORTANT: e.preventDefault() MUST be called synchronously before the first
+   * await. This function assumes the caller has already called:
+   *   e.preventDefault() / e.stopPropagation() / e.stopImmediatePropagation()
+   *   isProcessing = true
+   * …synchronously, before calling this async function.
+   *
+   * If there is nothing to scan after awaiting FileReader/DOM, we release by
+   * calling clickSendButtonDirect() so the user's message still goes through.
+   */
+  async function handleInterception(capturedPromptText) {
+    // Wait for any in-progress FileReader reads (e.g. user pasted an image
+    // a moment before clicking Send).
     if (pendingReadPromises.length > 0) {
       try { await Promise.allSettled(pendingReadPromises); } catch (_) {}
     }
 
+    // Re-read prompt text here too (may have changed while we awaited)
+    const promptText = capturedPromptText || getPromptText().trim();
     let attachments = getActiveAttachments();
 
     // Fallback: scan the DOM for image previews in the composer area
@@ -852,15 +861,12 @@
       }
     }
 
-    // If there is neither prompt text nor attachments, do not intercept
-    if (!promptText && attachments.length === 0) return;
-
-    // Prevent original submission
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-
-    isProcessing = true;
+    // If there is truly nothing to scan, release and let the original send go
+    if (!promptText && attachments.length === 0) {
+      isProcessing = false;
+      clickSendButtonDirect();
+      return;
+    }
 
     // Show analyzing state
     showAnalyzingOverlay(attachments.length);
@@ -1006,7 +1012,10 @@
       }
     }, true);
 
-    // Handler for send button clicks / touches / form submits
+    // Handler for send button clicks / touches / form submits.
+    // CRITICAL: e.preventDefault() + isProcessing must be set SYNCHRONOUSLY here,
+    // before calling the async handleInterception. Once we yield with await,
+    // the browser has already processed the event and preventDefault() has no effect.
     function handleSendTrigger(e) {
       if (!isEnabled || isProcessing || bypassInterception) return;
 
@@ -1016,9 +1025,17 @@
 
       if (isSendClick || isFormSubmit) {
         const promptText = getPromptText().trim();
-        const attachments = getActiveAttachments();
-        if (promptText || attachments.length > 0) {
-          handleInterception(e);
+        // Intercept if there is text, existing attachments, OR pending FileReader reads
+        // (image-only messages may have pendingReadPromises still running)
+        const hasContent = promptText || pendingAttachments.length > 0 || pendingReadPromises.length > 0;
+        if (hasContent) {
+          // ── SYNCHRONOUS prevention — must happen before any await ──
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          isProcessing = true;
+          // ── Async inspection (e is already cancelled above) ──
+          handleInterception(promptText);
         }
       }
     }
@@ -1028,7 +1045,8 @@
     document.addEventListener('click', handleSendTrigger, true);
     document.addEventListener('submit', handleSendTrigger, true);
 
-    // Intercept Enter key in input
+    // Intercept Enter key in input.
+    // Same principle: e.preventDefault() must fire synchronously before any await.
     document.addEventListener('keydown', (e) => {
       if (!isEnabled || isProcessing || bypassInterception) return;
       if (e.key !== 'Enter' || e.shiftKey) return;
@@ -1059,7 +1077,6 @@
       }
 
       if (currentSite === 'claude') {
-        // Broad detection: any contenteditable that's a ProseMirror or text input
         const editor = window.__promptguard_claude
           ? window.__promptguard_claude.getEditor()
           : document.querySelector('.ProseMirror[contenteditable="true"]')
@@ -1088,9 +1105,15 @@
 
       if (isInPromptInput) {
         const promptText = getPromptText().trim();
-        const attachments = getActiveAttachments();
-        if (promptText || attachments.length > 0) {
-          handleInterception(e);
+        const hasContent = promptText || pendingAttachments.length > 0 || pendingReadPromises.length > 0;
+        if (hasContent) {
+          // ── SYNCHRONOUS prevention ──
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          isProcessing = true;
+          // ── Async inspection ──
+          handleInterception(promptText);
         }
       }
     }, true);
