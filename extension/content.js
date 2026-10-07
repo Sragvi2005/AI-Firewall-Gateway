@@ -156,14 +156,48 @@
     const site = detectSite();
 
     if (site === 'chatgpt') {
-      // ChatGPT uses a textarea with id "prompt-textarea" or a contenteditable div
-      const textarea = document.getElementById('prompt-textarea');
-      if (textarea) {
-        return textarea.value || textarea.innerText || textarea.textContent || '';
+      // ChatGPT can use #prompt-textarea (as textarea or contenteditable div/container),
+      // ProseMirror/Lexical editor, or nested input elements.
+      const selectors = [
+        '#prompt-textarea',
+        '#prompt-textarea [contenteditable="true"]',
+        '#prompt-textarea p',
+        '[contenteditable="true"][role="textbox"]',
+        '.ProseMirror[contenteditable="true"]',
+        '[contenteditable="true"][data-placeholder]',
+        'form [contenteditable="true"]',
+        '#thread-form [contenteditable="true"]',
+        'textarea#prompt-textarea',
+        'textarea[data-id="root"]',
+        'textarea[placeholder]',
+        '[contenteditable="true"]',
+        'textarea',
+      ];
+
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+
+        if (el.tagName === 'TEXTAREA' && typeof el.value === 'string') {
+          const val = el.value.trim();
+          if (val) return val;
+        }
+
+        let text = '';
+        if (el.tagName === 'TEXTAREA') {
+          text = el.value || '';
+        } else {
+          // Clone element to safely remove any placeholder elements before reading text
+          const clone = el.cloneNode(true);
+          const placeholders = clone.querySelectorAll('.placeholder, [class*="placeholder"], [data-placeholder]');
+          placeholders.forEach((p) => p.remove());
+          text = clone.innerText || clone.textContent || '';
+        }
+
+        if (text && text.trim()) {
+          return text.trim();
+        }
       }
-      // Fallback: look for contenteditable in the compose area
-      const editable = document.querySelector('[contenteditable="true"][data-placeholder]');
-      if (editable) return editable.innerText || editable.textContent || '';
     }
 
     if (site === 'claude') {
@@ -263,12 +297,30 @@
     const site = detectSite();
 
     if (site === 'chatgpt') {
-      const textarea = document.getElementById('prompt-textarea');
-      if (textarea) {
-        if (textarea.tagName === 'TEXTAREA') {
-          textarea.value = '';
-        } else {
-          textarea.innerText = '';
+      const selectors = [
+        '#prompt-textarea',
+        '[contenteditable="true"][role="textbox"]',
+        '#prompt-textarea [contenteditable="true"]',
+        'textarea#prompt-textarea',
+        'textarea',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          if (el.tagName === 'TEXTAREA') {
+            const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+            if (nativeSetter) {
+              nativeSetter.call(el, '');
+            } else {
+              el.value = '';
+            }
+          } else {
+            el.innerHTML = '';
+            el.innerText = '';
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          break;
         }
       }
     }
@@ -302,15 +354,42 @@
     const site = detectSite();
 
     if (site === 'chatgpt') {
-      const textarea = document.getElementById('prompt-textarea');
-      if (textarea) {
-        if (textarea.tagName === 'TEXTAREA') {
-          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-          nativeSetter.call(textarea, text);
-          textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        } else {
-          textarea.innerText = text;
-          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      const selectors = [
+        '#prompt-textarea',
+        '[contenteditable="true"][role="textbox"]',
+        '#prompt-textarea [contenteditable="true"]',
+        '.ProseMirror[contenteditable="true"]',
+        'textarea#prompt-textarea',
+        'textarea',
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          if (el.tagName === 'TEXTAREA') {
+            const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+            if (nativeSetter) {
+              nativeSetter.call(el, text);
+            } else {
+              el.value = text;
+            }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            el.focus();
+            try {
+              const selObj = window.getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(el);
+              selObj.removeAllRanges();
+              selObj.addRange(range);
+              document.execCommand('insertText', false, text);
+            } catch (e) {
+              el.innerText = text;
+            }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          break;
         }
       }
     }
@@ -369,9 +448,32 @@
     const site = detectSite();
 
     if (site === 'chatgpt') {
-      return document.querySelector('[data-testid="send-button"]')
+      const primary = document.querySelector('[data-testid="send-button"]')
+        || document.querySelector('[data-testid="fruitjuice-send-button"]')
+        || document.querySelector('button[data-testid*="send"]')
         || document.querySelector('button[aria-label="Send prompt"]')
-        || document.querySelector('form button[type="submit"]');
+        || document.querySelector('button[aria-label="Send message"]')
+        || document.querySelector('button[aria-label="Send"]')
+        || document.querySelector('button[aria-label*="Send"]')
+        || document.querySelector('button[aria-label*="send"]')
+        || document.querySelector('#prompt-textarea + button')
+        || document.querySelector('#prompt-textarea ~ button')
+        || document.querySelector('form button[type="submit"]')
+        || document.querySelector('form button:not([disabled])');
+
+      if (primary) return primary;
+
+      const composerButtons = document.querySelectorAll('form button, #thread-form button, [class*="composer"] button');
+      for (const b of composerButtons) {
+        const label = (b.getAttribute('aria-label') || '').toLowerCase();
+        const testid = (b.getAttribute('data-testid') || '').toLowerCase();
+        if (label.includes('mic') || label.includes('voice') || label.includes('attach') || label.includes('file') || label.includes('upload') ||
+            testid.includes('mic') || testid.includes('voice') || testid.includes('attach') || testid.includes('speech')) {
+          continue;
+        }
+        return b;
+      }
+      return null;
     }
 
     if (site === 'claude') {
@@ -790,35 +892,59 @@
       }
     }, true);
 
-    // Intercept send button clicks
-    document.addEventListener('click', (e) => {
+    // Handler for send button clicks / touches / form submits
+    function handleSendTrigger(e) {
       if (!isEnabled || isProcessing || bypassInterception) return;
 
       const sendBtn = getSendButton();
-      if (sendBtn && (e.target === sendBtn || sendBtn.contains(e.target))) {
+      const isSendClick = sendBtn && (e.target === sendBtn || sendBtn.contains(e.target));
+      const isFormSubmit = e.type === 'submit';
+
+      if (isSendClick || isFormSubmit) {
         const promptText = getPromptText().trim();
         const attachments = getActiveAttachments();
         if (promptText || attachments.length > 0) {
           handleInterception(e);
         }
       }
-    }, true); // Use capture phase to intercept before the site's handlers
+    }
+
+    document.addEventListener('mousedown', handleSendTrigger, true);
+    document.addEventListener('pointerdown', handleSendTrigger, true);
+    document.addEventListener('click', handleSendTrigger, true);
+    document.addEventListener('submit', handleSendTrigger, true);
 
     // Intercept Enter key in input
     document.addEventListener('keydown', (e) => {
       if (!isEnabled || isProcessing || bypassInterception) return;
       if (e.key !== 'Enter' || e.shiftKey) return;
 
+      const currentSite = detectSite();
       let isInPromptInput = false;
 
-      if (site === 'chatgpt') {
-        const textarea = document.getElementById('prompt-textarea');
-        const editable = document.querySelector('[contenteditable="true"][data-placeholder]');
-        isInPromptInput = (textarea && textarea.contains(e.target))
-          || (editable && editable.contains(e.target));
+      if (currentSite === 'chatgpt') {
+        const inputSelectors = [
+          '#prompt-textarea',
+          '[contenteditable="true"]',
+          'textarea',
+          '[role="textbox"]',
+          'form',
+        ];
+        isInPromptInput = inputSelectors.some((sel) => {
+          const els = document.querySelectorAll(sel);
+          return Array.from(els).some((el) => el === e.target || el.contains(e.target));
+        });
+        if (!isInPromptInput && e.target && e.target.closest) {
+          isInPromptInput = !!(
+            e.target.closest('#prompt-textarea') ||
+            e.target.closest('form') ||
+            e.target.closest('[contenteditable="true"]') ||
+            e.target.closest('textarea')
+          );
+        }
       }
 
-      if (site === 'claude') {
+      if (currentSite === 'claude') {
         // Broad detection: any contenteditable that's a ProseMirror or text input
         const editor = window.__promptguard_claude
           ? window.__promptguard_claude.getEditor()
@@ -829,7 +955,7 @@
         }
       }
 
-      if (site === 'gemini') {
+      if (currentSite === 'gemini') {
         const editor = document.querySelector('.ql-editor[contenteditable="true"]')
           || document.querySelector('rich-textarea [contenteditable="true"]')
           || document.querySelector('[contenteditable="true"]');
@@ -838,7 +964,7 @@
         }
       }
 
-      if (['mistral', 'groq', 'cohere'].includes(site)) {
+      if (['mistral', 'groq', 'cohere'].includes(currentSite)) {
         const textarea = document.querySelector('textarea');
         const editable = document.querySelector('[contenteditable="true"][role="textbox"]')
           || document.querySelector('[contenteditable="true"]');
@@ -863,56 +989,47 @@
 
   function waitForEditorAndAttach() {
     const site = detectSite();
+    if (site === 'unknown') return;
 
-    // For ChatGPT, the textarea is usually present on load
-    if (site === 'chatgpt') {
+    const checkEditor = () => {
+      if (site === 'claude' && window.__promptguard_claude) {
+        return !!window.__promptguard_claude.getEditor();
+      }
+      return !!(
+        document.getElementById('prompt-textarea') ||
+        document.querySelector('textarea') ||
+        document.querySelector('[contenteditable="true"]')
+      );
+    };
+
+    if (checkEditor()) {
+      console.log(`[PromptGuard] ${site} editor found immediately`);
       attachListeners();
       return;
     }
 
-    // For sites with lazy-rendered editors — use MutationObserver
-    if (['claude', 'gemini', 'mistral', 'groq', 'cohere'].includes(site)) {
-      const checkEditor = () => {
-        if (site === 'claude') {
-          const editor = window.__promptguard_claude
-            ? window.__promptguard_claude.getEditor()
-            : document.querySelector('[contenteditable="true"]');
-          return !!editor;
-        }
-        // For other sites, check for textarea or contenteditable
-        return !!document.querySelector('textarea')
-          || !!document.querySelector('[contenteditable="true"]');
-      };
-
+    console.log(`[PromptGuard] Waiting for ${site} editor to appear...`);
+    const observer = new MutationObserver(() => {
       if (checkEditor()) {
-        console.log(`[PromptGuard] ${site} editor found immediately`);
-        attachListeners();
-        return;
-      }
-
-      console.log(`[PromptGuard] Waiting for ${site} editor to appear...`);
-      const observer = new MutationObserver(() => {
-        if (checkEditor()) {
-          console.log(`[PromptGuard] ${site} editor detected via MutationObserver`);
-          observer.disconnect();
-          attachListeners();
-        }
-      });
-
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-      });
-
-      // Safety timeout: stop observing after 30 seconds
-      setTimeout(() => {
+        console.log(`[PromptGuard] ${site} editor detected via MutationObserver`);
         observer.disconnect();
-        if (!listenersAttached) {
-          console.warn(`[PromptGuard] Timed out waiting for ${site} editor, attaching listeners anyway`);
-          attachListeners();
-        }
-      }, 30000);
-    }
+        attachListeners();
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    // Safety timeout: stop observing after 30 seconds
+    setTimeout(() => {
+      observer.disconnect();
+      if (!listenersAttached) {
+        console.warn(`[PromptGuard] Timed out waiting for ${site} editor, attaching listeners anyway`);
+        attachListeners();
+      }
+    }, 30000);
   }
 
   /* =========================================
@@ -1155,19 +1272,25 @@
     const site = detectSite();
     if (site === 'unknown') return;
 
-    console.log(`[PromptGuard] Content script loaded on ${site}`);
+    console.log(`[PromptGuard] Content script initialized on ${site}`);
 
-    // Inject styles (needed for MAIN world where CSS manifest entry may not apply)
-    injectStyles();
+    // Inject styles (if head/body is present)
+    if (document.head || document.documentElement) {
+      try { injectStyles(); } catch (e) {}
+    }
 
-    // Wait for the editor to appear and attach listeners
+    // Attach capture phase event listeners immediately
+    attachListeners();
+
+    // Monitor for lazy-loaded editor UI
     waitForEditorAndAttach();
   }
 
-  // Wait for page to be ready
-  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  // Attach immediately if document object exists
+  if (typeof document !== 'undefined') {
     init();
-  } else {
+  }
+  if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   }
 })();
