@@ -103,4 +103,18 @@ class PolicyDecisionEngine:
 
         return "".join(redacted)
 
+    def redact_matching_snippets(self, text: str, matches: List[DetectionMatch]) -> str:
+        """Redact exact detector snippets in a text segment with no shared offsets."""
+        redacted = text
+        # Longest first avoids a shorter overlapping finding consuming a longer one.
+        for match in sorted(matches, key=lambda item: len(item.text_snippet), reverse=True):
+            snippet = match.text_snippet
+            if not snippet:
+                continue
+            placeholder = ENTITY_PLACEHOLDERS.get(
+                match.entity_type, f"[{match.entity_type.upper()}_REDACTED]"
+            )
+            redacted = redacted.replace(snippet, placeholder)
+        return redacted
+
 policy_engine = PolicyDecisionEngine()

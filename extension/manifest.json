@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PromptGuard — AI Firewall",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Intercepts prompts on ChatGPT, Claude, Gemini, Mistral, Groq, and Cohere — routes them through the PromptGuard AI Firewall for real-time PII redaction, credential detection, and adversarial attack blocking.",
   "permissions": [
     "activeTab",
@@ -19,6 +19,17 @@
         "https://*.chatgpt.com/*",
         "https://*.openai.com/*"
       ],
+      "js": ["fetch_interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://*.chatgpt.com/*",
+        "https://*.openai.com/*"
+      ],
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_start"
@@ -27,8 +38,23 @@
       "matches": [
         "https://claude.ai/*"
       ],
-      "js": ["claude_bridge.js", "content.js"],
+      "js": ["fetch_interceptor.js", "claude_bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": ["content.js"],
       "css": ["styles.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": ["fetch_interceptor.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
@@ -44,6 +70,14 @@
       "matches": [
         "https://chat.mistral.ai/*"
       ],
+      "js": ["fetch_interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://chat.mistral.ai/*"
+      ],
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_start"
@@ -53,9 +87,26 @@
         "https://console.groq.com/*",
         "https://groq.com/*"
       ],
+      "js": ["fetch_interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://console.groq.com/*",
+        "https://groq.com/*"
+      ],
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://coral.cohere.com/*"
+      ],
+      "js": ["fetch_interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     },
     {
       "matches": [

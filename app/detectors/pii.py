@@ -5,7 +5,10 @@ from app.models import StageResult, DetectionMatch, ThreatSeverity
 
 PII_REGEX_PATTERNS = {
     "EMAIL_ADDRESS": {
-        "pattern": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        # OCR often inserts spaces around punctuation (for example,
+        # "person @ example.com"). Accept those spaces so extracted media
+        # receives the same PII protection as typed text.
+        "pattern": r"[a-zA-Z0-9._%+-]+\s*@\s*[a-zA-Z0-9-]+(?:\s*\.\s*[a-zA-Z0-9-]+)+",
         "severity": ThreatSeverity.MEDIUM,
         "placeholder": "[EMAIL_ADDRESS]",
         "desc": "Email address detected"

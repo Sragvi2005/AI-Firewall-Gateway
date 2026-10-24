@@ -8,6 +8,7 @@ from app.models import ChatCompletionRequest, PolicyAction, PolicyDecision
 from app.detectors.pipeline import detection_pipeline
 from app.policy.engine import policy_engine
 from app.compliance.audit import audit_logger
+from app.services.media_redaction import inject_sanitized_media_into_payload
 
 
 def _resolve_provider(request_provider: Optional[str]) -> LLMProvider:
@@ -81,9 +82,33 @@ async def _forward_anthropic(
         if msg.get("role") == "system":
             system_parts.append(msg.get("content", ""))
         else:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                anthropic_content = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        anthropic_content.append({"type": "text", "text": part.get("text", "")})
+                    elif part.get("type") == "image_url":
+                        image = part.get("image_url", {})
+                        image_url = image.get("url", "") if isinstance(image, dict) else str(image)
+                        if image_url.startswith("data:") and ";base64," in image_url:
+                            header, encoded = image_url.split(",", 1)
+                            media_type = header[5:].split(";", 1)[0] or "image/png"
+                            anthropic_content.append({
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": media_type, "data": encoded},
+                            })
+                        elif image_url:
+                            anthropic_content.append({
+                                "type": "image",
+                                "source": {"type": "url", "url": image_url},
+                            })
+                content = anthropic_content
             anthropic_messages.append({
                 "role": msg.get("role", "user"),
-                "content": msg.get("content", ""),
+                "content": content,
             })
 
     anthropic_payload = {
@@ -185,9 +210,27 @@ async def _forward_gemini(
 
         # Gemini uses "user" and "model" roles
         gemini_role = "model" if role == "assistant" else "user"
+        parts = []
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    parts.append({"text": part.get("text", "")})
+                elif part.get("type") == "image_url":
+                    image = part.get("image_url", {})
+                    image_url = image.get("url", "") if isinstance(image, dict) else str(image)
+                    if image_url.startswith("data:") and ";base64," in image_url:
+                        header, encoded = image_url.split(",", 1)
+                        media_type = header[5:].split(";", 1)[0] or "image/png"
+                        parts.append({"inline_data": {"mime_type": media_type, "data": encoded}})
+                    elif image_url:
+                        parts.append({"text": f"[Image URL: {image_url}]"})
+        else:
+            parts = [{"text": content}]
         gemini_contents.append({
             "role": gemini_role,
-            "parts": [{"text": content}],
+            "parts": parts,
         })
 
     gemini_payload = {
@@ -468,20 +511,31 @@ class ProxyService:
             msg.pop("attachments", None)
 
         if decision.action == PolicyAction.REDACT:
+            text_matches = [m for m in pipeline_result.all_matches if m.source == "text"]
             # Update the last user message or all user messages with redacted prompt
             for msg in target_payload.get("messages", []):
                 if msg.get("role") == "user":
                     content = msg.get("content", "")
                     if isinstance(content, str):
-                        msg["content"] = policy_engine._apply_redaction(
-                            content, pipeline_result.all_matches
-                        )
+                        msg["content"] = policy_engine.redact_matching_snippets(content, text_matches)
                     elif isinstance(content, list):
                         for part in content:
                             if isinstance(part, dict) and part.get("type") == "text":
-                                part["text"] = policy_engine._apply_redaction(
-                                    part.get("text", ""), pipeline_result.all_matches
+                                part["text"] = policy_engine.redact_matching_snippets(
+                                    part.get("text", ""), text_matches
                                 )
+
+            # Inject sanitized media (redacted images/PDFs/docs) into LLM payload
+            if all_attachments:
+                inject_sanitized_media_into_payload(
+                    target_payload, all_attachments, pipeline_result.all_matches
+                )
+
+        elif decision.action == PolicyAction.ALLOW and all_attachments:
+            # Forward clean attachments as multimodal content
+            inject_sanitized_media_into_payload(
+                target_payload, all_attachments, pipeline_result.all_matches
+            )
 
         # Forward request to LLM (Upstream or Mock)
         llm_response, status_code = await self._forward_to_llm(target_payload, provider)

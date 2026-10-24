@@ -636,11 +636,23 @@ class PromptGuardChat {
       mediaBadge = `<span class="media-scan-badge" title="${parts.join(', ')} scanned">📎 ${mediaCount} media scanned</span>`;
     }
 
+    // Build media forwarding indicator
+    const mediaFwd = security.media_forwarding;
+    let mediaFwdBadge = '';
+    if (mediaFwd && mediaFwd.total_attachments > 0) {
+      if (mediaFwd.media_redacted > 0) {
+        mediaFwdBadge = `<span class="media-fwd-badge redacted" title="${mediaFwd.media_redacted} file(s) sanitized before forwarding to LLM">🔒 Media Sanitized (${mediaFwd.media_redacted})</span>`;
+      } else {
+        mediaFwdBadge = `<span class="media-fwd-badge clean" title="All media forwarded clean to LLM">📤 ${mediaFwd.total_attachments} media → LLM</span>`;
+      }
+    }
+
     container.innerHTML = `
       <div class="security-badge ${cssClass}" id="toggle-${badgeId}" title="Click to view security analysis">
         <span class="badge-icon">${icons[action]}</span>
         <span>${labels[action]}</span>
         ${mediaBadge}
+        ${mediaFwdBadge}
         <span class="badge-arrow">▶</span>
       </div>
     `;
@@ -655,13 +667,13 @@ class PromptGuardChat {
         badge.classList.remove('expanded');
       } else {
         badge.classList.add('expanded');
-        const panel = this.buildSecurityPanel(security, badgeId);
+        const panel = this.buildSecurityPanel(security, badgeId, msgId);
         container.appendChild(panel);
       }
     });
   }
 
-  buildSecurityPanel(security, panelId) {
+  buildSecurityPanel(security, panelId, msgId) {
     const panel = document.createElement('div');
     panel.className = 'security-details';
     panel.id = panelId;
@@ -744,13 +756,85 @@ class PromptGuardChat {
       `;
     }
 
+    // Media Forwarding Summary
+    let mediaFwdHtml = '';
+    const mediaFwd = security.media_forwarding;
+    if (mediaFwd && mediaFwd.total_attachments > 0) {
+      const statusIcon = mediaFwd.media_redacted > 0 ? '🔒' : '📤';
+      const statusText = mediaFwd.media_redacted > 0
+        ? `${mediaFwd.media_redacted} file(s) sanitized, ${mediaFwd.media_clean} clean — all forwarded to LLM`
+        : `${mediaFwd.total_attachments} file(s) forwarded clean to LLM`;
+
+      mediaFwdHtml = `
+        <div class="detail-section">
+          <div class="detail-title">📤 Media Forwarding to LLM</div>
+          <div class="media-fwd-summary">
+            <div class="media-fwd-stat">
+              <span class="media-stat-icon">${statusIcon}</span>
+              <span class="media-stat-text">${statusText}</span>
+            </div>
+            <div class="media-fwd-stats-grid">
+              <div class="media-scan-stat">
+                <span class="media-stat-value">${mediaFwd.total_attachments}</span>
+                <span class="media-stat-label">Total</span>
+              </div>
+              <div class="media-scan-stat">
+                <span class="media-stat-value" style="color: ${mediaFwd.media_redacted > 0 ? '#fbbf24' : '#34d399'}">${mediaFwd.media_redacted}</span>
+                <span class="media-stat-label">Sanitized</span>
+              </div>
+              <div class="media-scan-stat">
+                <span class="media-stat-value" style="color: #34d399">${mediaFwd.media_clean}</span>
+                <span class="media-stat-label">Clean</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Compare the uploaded image with the sanitized copy returned by the gateway.
+    // Text documents show the detected before/after snippets instead.
+    let mediaComparisonHtml = '';
+    const comparisons = security.media_comparison || [];
+    const sourceMessage = this.messages.find(message => message.id === msgId);
+    if (comparisons.length) {
+      const comparisonRows = comparisons.map(item => {
+        const originalAttachment = (sourceMessage?.attachments || []).find(
+          attachment => attachment.filename === item.filename
+        );
+        const sanitizedUrl = item.sanitized_content_base64 || '';
+        const originalUrl = (() => {
+          const raw = originalAttachment?.content_base64 || '';
+          if (raw) return raw.startsWith('data:') ? raw : `data:${item.mime_type || originalAttachment.mime_type || 'image/png'};base64,${raw}`;
+          return originalAttachment?.previewUrl || '';
+        })();
+        if (sanitizedUrl.startsWith('data:image/') && originalUrl.startsWith('data:image/')) {
+          return `<div class="media-comparison-item">
+            <div class="media-comparison-name">${this.escapeHtml(item.filename)}</div>
+            <div class="media-comparison-images">
+              <div><div class="prompt-box-label">Original</div><img src="${this.escapeHtml(originalUrl)}" alt="Original ${this.escapeHtml(item.filename)}"></div>
+              <div><div class="prompt-box-label">Sanitized</div><img src="${this.escapeHtml(sanitizedUrl)}" alt="Sanitized ${this.escapeHtml(item.filename)}"></div>
+            </div>
+          </div>`;
+        }
+        const detections = (item.detections || []).map(detection => `<div class="media-comparison-text">
+          <span class="prompt-box original">${this.escapeHtml(detection.original || '')}</span>
+          <span aria-hidden="true">→</span>
+          <span class="prompt-box sanitized">${this.escapeHtml(detection.sanitized || '[REDACTED]')}</span>
+        </div>`).join('');
+        return `<div class="media-comparison-item"><div class="media-comparison-name">${this.escapeHtml(item.filename)}</div>${detections}</div>`;
+      }).join('');
+      mediaComparisonHtml = `<div class="detail-section"><div class="detail-title">Media Before and After</div>${comparisonRows}</div>`;
+    }
+
     // Entity list
     const allMatches = stages.flatMap(s => s.matches || []);
     let entitiesHtml = '';
     if (allMatches.length > 0) {
       const entityRows = allMatches.map(m => {
-        const sourceBadge = m.source === 'media'
-          ? `<span class="entity-source-badge media">📎 media</span>`
+        const isMedia = (m.source || '').startsWith('media:');
+        const sourceBadge = isMedia
+          ? `<span class="entity-source-badge media">📎 ${this.escapeHtml(m.source)}</span>`
           : `<span class="entity-source-badge text">💬 text</span>`;
         return `
           <div class="entity-item">
@@ -776,6 +860,8 @@ class PromptGuardChat {
         <div class="pipeline-stages">${stageCardsHtml}</div>
       </div>
       ${mediaScanHtml}
+      ${mediaFwdHtml}
+      ${mediaComparisonHtml}
       ${comparisonHtml}
       ${entitiesHtml}
     `;

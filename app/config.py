@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     ENABLE_MEDIA_SCANNING: bool = True
     MAX_ATTACHMENT_SIZE_MB: int = 10
     SUPPORTED_IMAGE_EXTENSIONS: str = ".png,.jpg,.jpeg,.gif,.bmp,.tiff,.webp"
-    SUPPORTED_FILE_EXTENSIONS: str = ".pdf,.docx,.xlsx,.csv,.txt,.log,.env,.json,.xml,.yaml,.yml,.md,.py,.js,.ts,.java,.go,.rs,.rb,.sh,.sql,.html,.css,.ini,.conf,.cfg"
+    SUPPORTED_FILE_EXTENSIONS: str = ".pdf,.docx,.xlsx,.pptx,.odt,.csv,.txt,.log,.env,.json,.xml,.yaml,.yml,.md,.py,.js,.ts,.java,.go,.rs,.rb,.sh,.sql,.html,.css,.ini,.conf,.cfg"
 
     def get_upstream_url(self, provider: LLMProvider | None = None) -> str:
         """Resolve the upstream LLM URL for a given provider."""

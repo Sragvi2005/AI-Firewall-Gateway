@@ -47,7 +47,7 @@
 ## ✨ Key Features
 
 * 🔒 **4-Stage Threat Inspection**: Comprehensive detection covering PII/Identity, Credentials & Secrets, Financial Data, and Transformer-based Jailbreaks/Adversarial Intent.
-* 📄 **Media & File Scanning**: Built-in OCR (Tesseract) and Document Parsing (PDF, DOCX, TXT, CSV) to extract and inspect text from attached images and files before they reach the LLM.
+* 📄 **Media & File Scanning**: Built-in OCR (Tesseract) and document parsing (PDF, DOCX, XLSX, PPTX, ODT, TXT, CSV, JSON, YAML, XML, and source files) to inspect attachments before they reach an LLM. Extraction failures and unsupported binary formats fail closed, so uninspected attachments are held back.
 * 🎮 **Interactive Attack Demonstration Mode**: Built-in side-by-side simulator showing prompt leakage vs. PromptGuard active mitigation.
 * 🧠 **Deep Learning & Transformers**: Integrates PyTorch and Hugging Face transformer models alongside Microsoft Presidio and NLP entity extractors.
 * 🌐 **Browser Extension Interception**: Intercepts prompts, file uploads, and pasted images in real-time on live LLM platforms (ChatGPT, Claude, Gemini, etc.) before submission.
@@ -137,7 +137,7 @@ A standalone ChatGPT-style application served directly from the gateway:
 * **URL**: `http://localhost:8000/chat`
 * **Features**:
   * Real-time prompt and media inspection before submission.
-  * Drag-and-drop file uploads (PDFs, Docs, Images) with automatic OCR and text extraction.
+* Drag-and-drop file uploads (PDF, DOCX, XLSX, PPTX, ODT, text/code, and images) with automatic OCR and text extraction.
   * Inline security status badges (`ALLOW`, `REDACT`, `BLOCK`) on every message.
   * Clickable detail cards showing detected entities, confidence scores, and redaction diffs.
 

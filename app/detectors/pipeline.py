@@ -34,6 +34,8 @@ class DetectionPipeline:
         stage_results: List[StageResult] = []
         all_matches: List[DetectionMatch] = []
         media_scan_info: Optional[Dict[str, Any]] = None
+        media_text_ranges: List[tuple[int, int, str]] = []
+        media_scan_failures: List[tuple[str, str]] = []
 
         # ── Media Extraction ──────────────────────────────────────────────
         # Extract text from images/files and append to the text for scanning.
@@ -45,6 +47,11 @@ class DetectionPipeline:
 
             if media_summary.combined_text:
                 media_extracted_text = media_summary.combined_text
+                media_text_ranges = [
+                    (e.combined_start, e.combined_end, e.filename)
+                    for e in media_summary.extractions
+                    if e.success and e.extracted_text
+                ]
                 logger.info(
                     f"Media scan: {media_summary.total_media_items} items, "
                     f"{media_summary.images_scanned} images, "
@@ -70,6 +77,35 @@ class DetectionPipeline:
                     for e in media_summary.extractions
                 ],
             }
+            media_scan_failures = [
+                (e.filename, e.error or "File could not be inspected")
+                for e in media_summary.extractions if not e.success
+            ]
+        elif attachments:
+            # A disabled scanner must not silently turn an attachment request
+            # into an ALLOW decision.
+            media_scan_failures = [
+                (str(item.get("filename", "attachment")), "Media scanning is disabled")
+                for item in attachments
+            ]
+            media_scan_info = {
+                "total_media_items": len(attachments),
+                "images_scanned": 0,
+                "files_scanned": 0,
+                "total_text_extracted": 0,
+                "extractions": [
+                    {
+                        "source_type": "file",
+                        "filename": filename,
+                        "mime_type": "application/octet-stream",
+                        "char_count": 0,
+                        "success": False,
+                        "error": error,
+                        "method": "none",
+                    }
+                    for filename, error in media_scan_failures
+                ],
+            }
 
         # Combine text + media-extracted text for full pipeline scanning
         # We mark the boundary so we can attribute detections to media sources
@@ -77,14 +113,17 @@ class DetectionPipeline:
         combined_text = text
         if media_extracted_text:
             combined_text = text + "\n\n" + media_extracted_text
+        media_boundary = text_boundary + (2 if media_extracted_text else 0)
 
         # ── Stage 1: PII ──────────────────────────────────────────────────
         if settings.ENABLE_STAGE_1_PII:
             res1 = self.stage1_pii.analyze(combined_text)
             # Tag matches that came from media
             for m in res1.matches:
-                if m.start >= text_boundary and media_scan_info:
-                    m.source = f"media"
+                for start, end, filename in media_text_ranges:
+                    if media_boundary + start <= m.start < media_boundary + end:
+                        m.source = f"media:{filename}"
+                        break
             stage_results.append(res1)
             all_matches.extend(res1.matches)
 
@@ -92,8 +131,10 @@ class DetectionPipeline:
         if settings.ENABLE_STAGE_2_CREDENTIALS:
             res2 = self.stage2_credentials.analyze(combined_text)
             for m in res2.matches:
-                if m.start >= text_boundary and media_scan_info:
-                    m.source = f"media"
+                for start, end, filename in media_text_ranges:
+                    if media_boundary + start <= m.start < media_boundary + end:
+                        m.source = f"media:{filename}"
+                        break
             stage_results.append(res2)
             all_matches.extend(res2.matches)
 
@@ -101,8 +142,10 @@ class DetectionPipeline:
         if settings.ENABLE_STAGE_3_FINANCIAL:
             res3 = self.stage3_financial.analyze(combined_text)
             for m in res3.matches:
-                if m.start >= text_boundary and media_scan_info:
-                    m.source = f"media"
+                for start, end, filename in media_text_ranges:
+                    if media_boundary + start <= m.start < media_boundary + end:
+                        m.source = f"media:{filename}"
+                        break
             stage_results.append(res3)
             all_matches.extend(res3.matches)
 
@@ -110,10 +153,42 @@ class DetectionPipeline:
         if settings.ENABLE_STAGE_4_INTENT:
             res4 = self.stage4_intent.analyze(combined_text)
             for m in res4.matches:
-                if m.start >= text_boundary and media_scan_info:
-                    m.source = f"media"
+                for start, end, filename in media_text_ranges:
+                    if media_boundary + start <= m.start < media_boundary + end:
+                        m.source = f"media:{filename}"
+                        break
             stage_results.append(res4)
             all_matches.extend(res4.matches)
+
+        # Unknown, unreadable, empty, oversized, or unscanned attachments are
+        # policy failures. Represent them as CRITICAL findings so every caller
+        # (inspection API, chat UI, browser extension, and LLM proxy) blocks
+        # forwarding through the same policy engine.
+        if media_scan_failures:
+            failure_matches = [
+                DetectionMatch(
+                    stage_id=0,
+                    stage_name="Media Inspection",
+                    entity_type="MEDIA_SCAN_FAILURE",
+                    text_snippet=filename,
+                    start=0,
+                    end=0,
+                    confidence=1.0,
+                    severity=ThreatSeverity.CRITICAL,
+                    description=f"Attachment could not be safely inspected: {reason}",
+                    source=f"media:{filename}",
+                )
+                for filename, reason in media_scan_failures
+            ]
+            stage_results.append(StageResult(
+                stage_id=0,
+                stage_name="Media Inspection",
+                passed=False,
+                detection_count=len(failure_matches),
+                matches=failure_matches,
+                execution_time_ms=0.0,
+            ))
+            all_matches.extend(failure_matches)
 
         # ── Determine highest severity ────────────────────────────────────
         highest_severity = ThreatSeverity.INFO

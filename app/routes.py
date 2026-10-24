@@ -7,6 +7,7 @@ from app.services.proxy import proxy_service, _resolve_provider, _resolve_model
 from app.detectors.pipeline import detection_pipeline
 from app.policy.engine import policy_engine
 from app.compliance.audit import audit_logger
+from app.services.media_redaction import sanitize_attachment, inject_sanitized_media_into_payload
 
 router = APIRouter()
 
@@ -139,6 +140,47 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
         },
     }
 
+    # Count how many media items will be forwarded (sanitized or clean)
+    media_forwarded_count = len(all_attachments) if all_attachments else 0
+    media_redacted_count = 0
+    if all_attachments:
+        media_matches = [m for m in pipeline_result.all_matches if m.source.startswith("media:")]
+        affected_files = set(m.source.split(":", 1)[1] for m in media_matches if ":" in m.source)
+        media_redacted_count = len(affected_files)
+    security_analysis["media_forwarding"] = {
+        "total_attachments": media_forwarded_count,
+        "media_redacted": media_redacted_count,
+        "media_clean": media_forwarded_count - media_redacted_count,
+    }
+    if decision.action == PolicyAction.REDACT and media_redacted_count:
+        media_comparison = []
+        for attachment in all_attachments:
+            filename = attachment.get("filename", "attachment")
+            file_matches = [
+                match for match in pipeline_result.all_matches
+                if match.source == f"media:{filename}"
+            ]
+            if not file_matches:
+                continue
+            mime_type = attachment.get("mime_type") or ""
+            comparison = {"filename": filename, "mime_type": mime_type}
+            sanitized = sanitize_attachment(attachment, file_matches)
+            if sanitized and sanitized.get("mime_type", mime_type).startswith("image/"):
+                comparison["mime_type"] = sanitized.get("mime_type", mime_type)
+                comparison["sanitized_content_base64"] = sanitized["content_base64"]
+            comparison["detections"] = [
+                {
+                    "entity_type": match.entity_type,
+                    "original": match.text_snippet,
+                    "sanitized": policy_engine.redact_matching_snippets(
+                        match.text_snippet, [match]
+                    ),
+                }
+                for match in file_matches
+            ]
+            media_comparison.append(comparison)
+        security_analysis["media_comparison"] = media_comparison
+
     # 4a. If BLOCK — do not forward to LLM
     if decision.action == PolicyAction.BLOCK:
         latency_ms = (time.time() - start_time) * 1000
@@ -169,20 +211,31 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
         msg.pop("attachments", None)
 
     if decision.action == PolicyAction.REDACT:
+        text_matches = [m for m in pipeline_result.all_matches if m.source == "text"]
         for msg in target_payload.get("messages", []):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    msg["content"] = policy_engine._apply_redaction(
-                        content, pipeline_result.all_matches
-                    )
+                    msg["content"] = policy_engine.redact_matching_snippets(content, text_matches)
                 elif isinstance(content, list):
                     # Redact text parts within multimodal content
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
-                            part["text"] = policy_engine._apply_redaction(
-                                part.get("text", ""), pipeline_result.all_matches
+                            part["text"] = policy_engine.redact_matching_snippets(
+                                part.get("text", ""), text_matches
                             )
+
+        # Inject sanitized media (redacted images/PDFs/docs) into LLM payload
+        if all_attachments:
+            inject_sanitized_media_into_payload(
+                target_payload, all_attachments, pipeline_result.all_matches
+            )
+
+    elif decision.action == PolicyAction.ALLOW and all_attachments:
+        # Forward clean attachments as multimodal content (no matches to redact)
+        inject_sanitized_media_into_payload(
+            target_payload, all_attachments, pipeline_result.all_matches
+        )
 
     llm_response, status_code = await proxy_service._forward_to_llm(target_payload, provider)
     latency_ms = (time.time() - start_time) * 1000
@@ -233,12 +286,30 @@ async def inspect_prompt(request: InspectionRequest):
 
     pipeline_res = detection_pipeline.run(request.prompt, attachments=attachment_dicts)
     decision = policy_engine.evaluate(request.prompt, pipeline_res)
+    sanitized_attachments = []
+    media_redaction_failures = []
+    if decision.action == PolicyAction.REDACT:
+        for attachment in attachment_dicts or []:
+            filename = attachment.get("filename", "attachment")
+            media_matches = [
+                match for match in pipeline_res.all_matches
+                if match.source == f"media:{filename}"
+            ]
+            if not media_matches:
+                continue
+            sanitized = sanitize_attachment(attachment, media_matches)
+            if sanitized:
+                sanitized_attachments.append(sanitized)
+            else:
+                media_redaction_failures.append(filename)
     return {
         "prompt": request.prompt,
         "action": decision.action,
         "redacted_prompt": decision.redacted_prompt,
         "reasons": decision.reasons,
         "blocked_by_stage": decision.blocked_by_stage,
+        "sanitized_attachments": sanitized_attachments,
+        "media_redaction_failures": media_redaction_failures,
         "pipeline": pipeline_res.model_dump()
     }
 

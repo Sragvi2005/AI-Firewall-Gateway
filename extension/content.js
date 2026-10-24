@@ -23,8 +23,62 @@
   let bypassInterception = false;
   let listenersAttached = false;
   let pendingAttachments = [];
+  let replayingSanitizedFileChange = false;
   // Track in-progress FileReader promises so handleInterception can await them
   let pendingReadPromises = [];
+
+  function handlePromptGuardOverlayEvent(event) {
+    const target = event.target?.closest?.('#pg-close-btn, #pg-cancel-btn, #pg-backdrop, [data-pg-download]');
+    if (!target) return;
+    const overlay = target.closest('.promptguard-overlay');
+    const actions = overlay?.__promptGuardErrorActions;
+    if (!actions) return;
+
+    // The page-level send guard can be left active while a warning is shown.
+    // Stop these overlay events at window capture so the guard cannot swallow
+    // the click before the extension's controls receive it.
+    if (event.type !== 'click') {
+      event.stopImmediatePropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (target.matches('[data-pg-download]')) {
+      actions.download(Number(target.getAttribute('data-pg-download')));
+    } else {
+      actions.dismiss();
+    }
+  }
+
+  ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'].forEach((type) => {
+    window.addEventListener(type, handlePromptGuardOverlayEvent, true);
+  });
+
+  // Install the file guard at document_start, before the app can register its
+  // own upload handlers. File inputs are used before the composer listeners
+  // below are attached, so a later document-level capture listener can be too
+  // late for frameworks that observe changes on window.
+  window.addEventListener('input', (e) => {
+    const input = e.target;
+    if (replayingSanitizedFileChange || !isEnabled || !input || input.type !== 'file') return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  }, true);
+
+  window.addEventListener('change', (e) => {
+    const input = e.target;
+    if (!input || input.type !== 'file' || !input.files || input.files.length === 0) return;
+    if (replayingSanitizedFileChange) {
+      addFiles(input.files);
+      return;
+    }
+    if (!isEnabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    void inspectAndReplayFiles(input, input.files);
+  }, true);
 
   // Storage API may not be available in MAIN world — wrap safely
   try {
@@ -60,6 +114,96 @@
       isEnabled = e.detail.enabled;
     }
   });
+
+  /* =========================================
+     FETCH INTERCEPTOR EVENT LISTENERS
+     Listen for events from fetch_interceptor.js (MAIN world)
+     which catches actual API calls at the network level.
+     ========================================= */
+
+  window.addEventListener('promptguard-fetch-blocked', (e) => {
+    const reasons = (e.detail && e.detail.reasons) || ['Request blocked by security policy'];
+    showFetchOverlay('BLOCK', '', '', reasons);
+  });
+
+  window.addEventListener('promptguard-fetch-redacted', (e) => {
+    const detail = e.detail || {};
+    const reasons = detail.reasons || ['Sensitive data was detected and redacted'];
+    showFetchOverlay('REDACT', detail.original || '', detail.redacted || '', reasons);
+  });
+
+  /**
+   * Show an overlay notification triggered by the fetch interceptor.
+   * Unlike handleInterception overlays, these are informational —
+   * the fetch has already been modified/blocked at the network level.
+   */
+  function showFetchOverlay(action, originalPrompt, redactedPrompt, reasons) {
+    removeOverlay();
+
+    const iconMap = { ALLOW: '✅', REDACT: '🟡', BLOCK: '🔴' };
+    const titleMap = {
+      ALLOW: 'Prompt Approved — No Threats Detected',
+      REDACT: 'Sensitive Data Detected — Automatically Redacted',
+      BLOCK: 'Security Threat Detected — Blocked',
+    };
+    const classMap = { ALLOW: 'pg-allow', REDACT: 'pg-redact', BLOCK: 'pg-block' };
+
+    overlayEl = document.createElement('div');
+    overlayEl.className = 'promptguard-overlay';
+    overlayEl.id = 'promptguard-overlay';
+
+    const reasonsHtml = reasons.map(r =>
+      `<div class="pg-reason">• ${escapeHtml(r)}</div>`
+    ).join('');
+
+    let comparisonHtml = '';
+    if (action === 'REDACT' && originalPrompt) {
+      comparisonHtml = `
+        <div class="pg-comparison">
+          <div class="pg-compare-col">
+            <div class="pg-compare-label">Original (Blocked)</div>
+            <div class="pg-compare-text pg-original">${escapeHtml(originalPrompt.substring(0, 500))}</div>
+          </div>
+          <div class="pg-compare-col">
+            <div class="pg-compare-label">Sent to LLM (Sanitized)</div>
+            <div class="pg-compare-text pg-sanitized">${escapeHtml(redactedPrompt.substring(0, 500))}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    overlayEl.innerHTML = `
+      <div class="pg-overlay-backdrop" id="pg-backdrop"></div>
+      <div class="pg-overlay-card ${classMap[action]}">
+        <div class="pg-overlay-header">
+          <div class="pg-overlay-icon">${iconMap[action]}</div>
+          <div>
+            <div class="pg-overlay-title">${titleMap[action]}</div>
+            <div class="pg-overlay-badge ${classMap[action]}">${action}</div>
+          </div>
+          <button class="pg-close-btn" id="pg-close-btn">✕</button>
+        </div>
+        <div class="pg-overlay-body">
+          ${reasonsHtml}
+          ${comparisonHtml}
+        </div>
+        <div class="pg-overlay-footer">
+          <button class="pg-btn pg-btn-cancel" id="pg-cancel-btn">Dismiss</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlayEl);
+
+    document.getElementById('pg-close-btn')?.addEventListener('click', removeOverlay);
+    document.getElementById('pg-backdrop')?.addEventListener('click', removeOverlay);
+    document.getElementById('pg-cancel-btn')?.addEventListener('click', removeOverlay);
+
+    // Auto-dismiss after 8 seconds for REDACT notifications
+    if (action === 'REDACT') {
+      setTimeout(removeOverlay, 8000);
+    }
+  }
 
   /* =========================================
      MEDIA & ATTACHMENT CAPTURE
@@ -120,6 +264,14 @@
     const batchPromise = Promise.all(promises).then((results) => {
       for (const res of results) {
         if (res && res.content_base64) {
+          // Another path may have recorded this attachment while FileReader
+          // was running (for example, immediately after replaying sanitized
+          // bytes into the site's file input). Recheck at insertion time to
+          // avoid adding a second copy after the asynchronous read completes.
+          const alreadyRecorded = pendingAttachments.some(
+            (a) => a.filename === res.filename && a.size === res.size
+          );
+          if (alreadyRecorded) continue;
           pendingAttachments.push(res);
           console.log(`[PromptGuard] Captured file attachment: ${res.filename} (${formatBytes(res.size)}, ${res.mime_type})`);
         }
@@ -564,6 +716,277 @@
     }
   }
 
+  function replaceInputFiles(input, files) {
+    if (!input) return false;
+    try {
+      const transfer = new DataTransfer();
+      files.forEach((file) => transfer.items.add(file));
+      input.files = transfer.files;
+      replayingSanitizedFileChange = true;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      setTimeout(() => { replayingSanitizedFileChange = false; }, 0);
+      return true;
+    } catch (err) {
+      console.error('[PromptGuard] Could not replace selected files:', err);
+      replayingSanitizedFileChange = false;
+      return false;
+    }
+  }
+
+  function clearInputFiles(input) {
+    if (!input) return;
+    try {
+      input.value = '';
+      input.files = new DataTransfer().files;
+    } catch (_) {}
+  }
+
+  function fileFromDataUri(dataUri, filename, fallbackType) {
+    const comma = dataUri.indexOf(',');
+    if (comma < 0) throw new Error('Sanitized attachment has an invalid data URI');
+    const metadata = dataUri.slice(0, comma);
+    const mime = (metadata.match(/^data:([^;]+)/) || [])[1] || fallbackType || 'application/octet-stream';
+    const binary = atob(dataUri.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new File([bytes], filename, { type: mime, lastModified: Date.now() });
+  }
+
+  function rememberInspectedAttachments(serialized, sensitiveFilenames, sanitizedByName) {
+    const latestByName = new Map(serialized.map((item) => [item.filename, item]));
+    const items = [...latestByName.values()];
+    const names = new Set(items.map((item) => item.filename));
+    // The site may clear input.files as soon as it has copied the upload into
+    // its own composer state. Keep the exact inspected bytes ourselves so the
+    // later send check cannot accidentally rescan stale originals.
+    pendingAttachments = pendingAttachments.filter((item) => !names.has(item.filename));
+    const timestamp = Date.now();
+    for (const item of items) {
+      const sanitized = sensitiveFilenames.has(item.filename)
+        ? sanitizedByName.get(item.filename)
+        : null;
+      const content = sanitized?.content_base64 || item.content_base64;
+      const encoded = content.slice(content.indexOf(',') + 1);
+      const padding = (encoded.match(/=*$/) || [''])[0].length;
+      const size = Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+      pendingAttachments.push({
+        ...item,
+        content_base64: content,
+        mime_type: sanitized?.mime_type || item.mime_type,
+        size,
+        timestamp,
+      });
+    }
+  }
+
+  function removeComposerAttachment(filename) {
+    const stem = filename.replace(/\.[^.]+$/, '').toLowerCase();
+    const controls = Array.from(document.querySelectorAll('button, [role="button"]'));
+    const removeButton = controls.find((control) => {
+      const label = [
+        control.getAttribute('aria-label'),
+        control.getAttribute('title'),
+        control.textContent,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return label.includes(stem) && /\b(remove|delete|close)\b/.test(label);
+    });
+    if (removeButton) {
+      removeButton.click();
+      return true;
+    }
+
+    // ChatGPT sometimes labels the remove control generically ("Remove file")
+    // and puts the filename on the attachment chip instead of the button.
+    const filenameNode = Array.from(document.querySelectorAll('[title], [aria-label], span, p'))
+      .find((node) => {
+        const label = [node.getAttribute('title'), node.getAttribute('aria-label'), node.textContent]
+          .filter(Boolean).join(' ').toLowerCase();
+        return label.includes(stem);
+      });
+    let container = filenameNode;
+    for (let depth = 0; container && depth < 6; depth++, container = container.parentElement) {
+      const scopedControl = Array.from(container.querySelectorAll?.('button, [role="button"]') || [])
+        .find((control) => /\b(remove|delete|close)\b/i.test([
+          control.getAttribute('aria-label'), control.getAttribute('title'), control.textContent,
+        ].filter(Boolean).join(' ')));
+      if (scopedControl) {
+        scopedControl.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function clearHeldBackAttachments(attachments = []) {
+    const filenames = new Set([
+      ...attachments.map((item) => item?.filename || item?.name).filter(Boolean),
+      ...pendingAttachments.map((item) => item.filename).filter(Boolean),
+    ]);
+    let removedCount = 0;
+    for (const filename of filenames) {
+      if (removeComposerAttachment(filename)) removedCount++;
+    }
+
+    // If the platform exposes a generic remove control with no filename
+    // association, clear the remaining queued files by their attachment label.
+    let remaining = filenames.size - removedCount;
+    if (remaining > 0) {
+      const genericRemoveControls = Array.from(document.querySelectorAll('button, [role="button"]'))
+        .filter((control) => /\b(remove|delete)\b/i.test([
+          control.getAttribute('aria-label'), control.getAttribute('title'), control.textContent,
+        ].filter(Boolean).join(' ')) && /\b(file|attachment|upload)\b/i.test([
+          control.getAttribute('aria-label'), control.getAttribute('title'), control.textContent,
+        ].filter(Boolean).join(' ')));
+      for (const control of genericRemoveControls.slice(0, remaining)) control.click();
+    }
+
+    // Clear file inputs as well as ChatGPT's visible composer chips. Clearing
+    // both prevents the original bytes from remaining queued after dismissal.
+    document.querySelectorAll('input[type="file"]').forEach(clearInputFiles);
+    clearAttachments();
+    isProcessing = false;
+  }
+
+  function replaceSensitiveComposerFiles(result, attachments) {
+    const mediaMatches = (result.pipeline?.stage_results || result.pipeline?.stages || [])
+      .flatMap((stage) => stage.matches || [])
+      .filter((match) => (match.source || '').startsWith('media:'));
+    if (mediaMatches.length === 0) return true;
+
+    const sensitiveNames = new Set(mediaMatches.map((match) => match.source.slice('media:'.length)));
+    const sanitizedByName = new Map((result.sanitized_attachments || []).map((item) => [item.filename, item]));
+    const failedNames = new Set(result.media_redaction_failures || []);
+    if ([...failedNames].some((name) => sensitiveNames.has(name))) return false;
+
+    // File uploads are sanitized before they are replayed into ChatGPT. By the
+    // time the user confirms the send, ChatGPT may already have consumed and
+    // cleared the input element. If the bytes being sent match the inspected
+    // sanitized copies, there is nothing left to replace in the DOM.
+    const attachmentsByName = new Map((attachments || []).map((item) => [item.filename, item]));
+    const alreadySanitized = [...sensitiveNames].every((name) => {
+      const attachment = attachmentsByName.get(name);
+      const sanitized = sanitizedByName.get(name);
+      return !!attachment?.content_base64
+        && !!sanitized?.content_base64
+        && attachment.content_base64 === sanitized.content_base64;
+    });
+    if (alreadySanitized) return true;
+
+    const input = document.querySelector('input[type="file"]');
+    if (!input) return false;
+    const currentFiles = Array.from(input.files || []);
+    const attachmentNames = new Set((attachments || []).map((item) => item.filename));
+    // The intercepted media must correspond to the selected files that will be
+    // replayed. The site may have moved it into a composer chip and cleared the
+    // file input; in that case remove the chip before attaching the sanitized
+    // replacement so the original cannot remain queued for sending.
+    if ([...sensitiveNames].some((name) => !attachmentNames.has(name))) {
+      return false;
+    }
+
+    try {
+      if (currentFiles.length > 0) {
+        const replacements = currentFiles.map((file) => {
+          if (!sensitiveNames.has(file.name)) return file;
+          const sanitized = sanitizedByName.get(file.name);
+          if (!sanitized?.content_base64) throw new Error(`Missing sanitized copy for ${file.name}`);
+          return fileFromDataUri(sanitized.content_base64, file.name, sanitized.mime_type);
+        });
+        const currentNames = new Set(currentFiles.map((file) => file.name));
+        for (const name of sensitiveNames) {
+          if (currentNames.has(name)) continue;
+          const sanitized = sanitizedByName.get(name);
+          if (!sanitized?.content_base64 || !removeComposerAttachment(name)) return false;
+          replacements.push(fileFromDataUri(sanitized.content_base64, name, sanitized.mime_type));
+        }
+        if (!replaceInputFiles(input, replacements)) return false;
+      } else {
+        const sanitizedFiles = [];
+        for (const name of sensitiveNames) {
+          const sanitized = sanitizedByName.get(name);
+          if (!sanitized?.content_base64 || !removeComposerAttachment(name)) return false;
+          sanitizedFiles.push(fileFromDataUri(sanitized.content_base64, name, sanitized.mime_type));
+        }
+        if (!replaceInputFiles(input, sanitizedFiles)) return false;
+      }
+    } catch (err) {
+      console.error('[PromptGuard] Could not create sanitized composer files:', err);
+      return false;
+    }
+
+    rememberInspectedAttachments(attachments || [], sensitiveNames, sanitizedByName);
+    return true;
+  }
+
+  async function inspectAndReplayFiles(input, fileList) {
+    const originals = Array.from(fileList || []);
+    if (!input || originals.length === 0) return;
+
+    // The page's file input must not receive the original bytes while inspection
+    // is running. Only the sanitized replacements are replayed into the app.
+    clearInputFiles(input);
+    const serialized = await Promise.all(originals.map(readFileAsBase64));
+    if (serialized.some((item) => !item || !item.content_base64)) {
+      showOverlayError('PromptGuard could not read every attachment. The files were held back.', [], originals);
+      return;
+    }
+
+    const result = await inspectPrompt(getPromptText().trim(), serialized);
+    if (!result) {
+      showOverlayError('PromptGuard could not inspect the attachments. The files were held back.', [], originals);
+      return;
+    }
+    if (result.action === 'BLOCK') {
+      showOverlay(result, getPromptText().trim(), serialized);
+      return;
+    }
+
+    const failedExtractions = (result.pipeline?.media_scan?.extractions || [])
+      .filter((item) => !item.success)
+      .map((item) => item.filename);
+    if (failedExtractions.some((name) => originals.some((file) => file.name === name))) {
+      showOverlayError('PromptGuard could not inspect every attachment. The uninspected files were held back.', [], originals);
+      return;
+    }
+
+    const mediaMatches = (result.pipeline?.stage_results || result.pipeline?.stages || [])
+      .flatMap((stage) => stage.matches || [])
+      .filter((match) => (match.source || '').startsWith('media:'));
+    const sensitiveFilenames = new Set(mediaMatches.map((match) => match.source.slice('media:'.length)));
+    const sanitizedByName = new Map((result.sanitized_attachments || []).map((item) => [item.filename, item]));
+    const failedNames = new Set(result.media_redaction_failures || []);
+
+    if ([...failedNames].some((name) => originals.some((file) => file.name === name))) {
+      showOverlayError('PromptGuard detected sensitive text but could not safely redact that file. It was held back.', [], originals);
+      return;
+    }
+
+    const replacements = [];
+    try {
+      for (const file of originals) {
+        if (!sensitiveFilenames.has(file.name)) {
+          replacements.push(file);
+          continue;
+        }
+        const sanitized = sanitizedByName.get(file.name);
+        if (!sanitized?.content_base64) {
+          showOverlayError(`PromptGuard could not produce a redacted copy of ${file.name}. The file was held back.`, [], originals);
+          return;
+        }
+        replacements.push(fileFromDataUri(sanitized.content_base64, file.name, sanitized.mime_type));
+      }
+    } catch (err) {
+      showOverlayError('PromptGuard could not prepare the sanitized attachment. The file was held back.', [], originals);
+      return;
+    }
+
+    if (!replaceInputFiles(input, replacements)) {
+      showOverlayError('PromptGuard could not replace the original attachment. The files were held back.', result.sanitized_attachments || [], originals);
+      return;
+    }
+    rememberInspectedAttachments(serialized, sensitiveFilenames, sanitizedByName);
+  }
+
   /* =========================================
      OVERLAY UI
      ========================================= */
@@ -697,6 +1120,10 @@
 
     if (proceedRedactedBtn) {
       proceedRedactedBtn.addEventListener('click', () => {
+        if (!replaceSensitiveComposerFiles(result, attachments)) {
+          showOverlayError('ChatGPT had already taken control of the attachment, so PromptGuard could not swap it in place. The original was held back. Download a sanitized copy if one is available, then attach it to continue.', result.sanitized_attachments || [], attachments);
+          return;
+        }
         removeOverlay();
         // Replace with redacted text and send
         setPromptText(result.redacted_prompt);
@@ -877,7 +1304,7 @@
     if (!result) {
       // Gateway offline — show warning but allow through
       removeOverlay();
-      showOverlayError('Could not connect to PromptGuard gateway (localhost:8000). Prompt was not inspected.');
+      showOverlayError('Could not connect to PromptGuard gateway (localhost:8000). Prompt was not inspected.', [], attachments);
       isProcessing = false;
       return;
     }
@@ -920,8 +1347,59 @@
     document.body.appendChild(overlayEl);
   }
 
-  function showOverlayError(message) {
+  function downloadSanitizedAttachment(attachment) {
+    try {
+      const dataUri = attachment?.content_base64 || '';
+      const comma = dataUri.indexOf(',');
+      if (comma < 0) throw new Error('Missing sanitized file data');
+      const metadata = dataUri.slice(0, comma);
+      const mime = (metadata.match(/^data:([^;]+)/) || [])[1]
+        || attachment.mime_type || 'application/octet-stream';
+      const binary = atob(dataUri.slice(comma + 1));
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      const link = document.createElement('a');
+      link.href = url;
+      const originalName = attachment.filename || 'attachment';
+      const dot = originalName.lastIndexOf('.');
+      link.download = dot > 0
+        ? `${originalName.slice(0, dot)}_sanitized${originalName.slice(dot)}`
+        : `${originalName}_sanitized`;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      return true;
+    } catch (err) {
+      console.error('[PromptGuard] Could not download sanitized attachment:', err);
+      return false;
+    }
+  }
+
+  function downloadSanitizedAttachmentAndClose(attachment, heldAttachments = []) {
+    if (!downloadSanitizedAttachment(attachment)) return false;
+    // A successful download is the recovery action for this blocking state.
+    // Remove the held original and close the overlay so the user can attach
+    // the downloaded copy in ChatGPT without refreshing the page.
+    clearHeldBackAttachments(heldAttachments);
     removeOverlay();
+    return true;
+  }
+
+  function showOverlayError(message, sanitizedAttachments = [], attachmentsToClear = []) {
+    isProcessing = false;
+    removeOverlay();
+
+    const downloadableAttachments = sanitizedAttachments
+      .filter((item) => item?.content_base64)
+    const downloadButtons = downloadableAttachments
+      .map((item, index) => `<button class="pg-btn pg-btn-proceed" data-pg-download="${index}">Download sanitized ${escapeHtml(item.filename || 'file')}</button>`)
+      .join('');
+    const noDownloadNote = message.includes('sanitized copy') && downloadableAttachments.length === 0
+      ? '<div class="pg-reason">No sanitized copy could be generated, so there is no file to download. The original remains held back.</div>'
+      : '';
 
     overlayEl = document.createElement('div');
     overlayEl.className = 'promptguard-overlay';
@@ -933,14 +1411,16 @@
         <div class="pg-overlay-header">
           <div class="pg-overlay-icon">⚠️</div>
           <div>
-            <div class="pg-overlay-title">Gateway Connection Error</div>
+            <div class="pg-overlay-title">PromptGuard Held Back the File</div>
           </div>
           <button class="pg-close-btn" id="pg-close-btn">✕</button>
         </div>
         <div class="pg-overlay-body">
           <div class="pg-reason">${escapeHtml(message)}</div>
+          ${noDownloadNote}
         </div>
         <div class="pg-overlay-footer">
+          ${downloadButtons}
           <button class="pg-btn pg-btn-cancel" id="pg-cancel-btn">Dismiss</button>
         </div>
       </div>
@@ -948,9 +1428,14 @@
 
     document.body.appendChild(overlayEl);
 
-    document.getElementById('pg-close-btn')?.addEventListener('click', removeOverlay);
-    document.getElementById('pg-backdrop')?.addEventListener('click', removeOverlay);
-    document.getElementById('pg-cancel-btn')?.addEventListener('click', removeOverlay);
+    const dismissAndClear = () => {
+      clearHeldBackAttachments(attachmentsToClear);
+      removeOverlay();
+    };
+    overlayEl.__promptGuardErrorActions = {
+      dismiss: dismissAndClear,
+      download: (index) => downloadSanitizedAttachmentAndClose(downloadableAttachments[index], attachmentsToClear),
+    };
   }
 
   /* =========================================
@@ -964,21 +1449,23 @@
     const site = detectSite();
     console.log(`[PromptGuard] Attaching event listeners for ${site}`);
 
-    // Intercept file uploads via <input type="file">
-    document.addEventListener('change', (e) => {
-      if (e.target && (e.target.type === 'file' || e.target.tagName === 'INPUT') && e.target.files && e.target.files.length > 0) {
-        addFiles(e.target.files);
-      }
-    }, true);
-
-    // Intercept drag and drop files
+    // Route dropped files through the same pre-upload inspection path.
     document.addEventListener('drop', (e) => {
-      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        addFiles(e.dataTransfer.files);
+      if (!e.dataTransfer?.files?.length) return;
+      if (!isEnabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      const input = e.target?.closest?.('form')?.querySelector('input[type="file"]')
+        || document.querySelector('input[type="file"]');
+      if (!input) {
+        showOverlayError('PromptGuard could not route the dropped file for inspection. It was held back.', [], Array.from(e.dataTransfer.files));
+        return;
       }
+      void inspectAndReplayFiles(input, e.dataTransfer.files);
     }, true);
 
-    // Intercept clipboard paste of images/files
+    // Route pasted files through inspection before the site's paste handler.
     document.addEventListener('paste', (e) => {
       if (e.clipboardData) {
         const files = [];
@@ -1006,18 +1493,45 @@
           }
         }
         if (files.length > 0) {
+          if (!isEnabled) return;
           console.log(`[PromptGuard] Paste captured ${files.length} file(s) from clipboard`);
-          addFiles(files);
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          const input = e.target?.closest?.('form')?.querySelector('input[type="file"]')
+            || document.querySelector('input[type="file"]');
+          if (!input) {
+            showOverlayError('PromptGuard could not route the pasted file for inspection. It was held back.', [], files);
+            return;
+          }
+          void inspectAndReplayFiles(input, files);
         }
       }
     }, true);
+
+    // ── Event blocker: kill ALL send-related events while processing ──
+    // This is critical because mousedown sets isProcessing=true, but the
+    // browser still fires mouseup, pointerup, and click as separate events.
+    // Without blocking them too, they propagate to React/the LLM framework.
+    function blockWhileProcessing(e) {
+      if (isProcessing && !bypassInterception) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        return true;
+      }
+      return false;
+    }
 
     // Handler for send button clicks / touches / form submits.
     // CRITICAL: e.preventDefault() + isProcessing must be set SYNCHRONOUSLY here,
     // before calling the async handleInterception. Once we yield with await,
     // the browser has already processed the event and preventDefault() has no effect.
     function handleSendTrigger(e) {
-      if (!isEnabled || isProcessing || bypassInterception) return;
+      if (!isEnabled || bypassInterception) return;
+
+      // While processing, block ALL send-related events so they don't leak to React
+      if (blockWhileProcessing(e)) return;
 
       const sendBtn = getSendButton();
       const isSendClick = sendBtn && (e.target === sendBtn || sendBtn.contains(e.target));
@@ -1026,7 +1540,6 @@
       if (isSendClick || isFormSubmit) {
         const promptText = getPromptText().trim();
         // Intercept if there is text, existing attachments, OR pending FileReader reads
-        // (image-only messages may have pendingReadPromises still running)
         const hasContent = promptText || pendingAttachments.length > 0 || pendingReadPromises.length > 0;
         if (hasContent) {
           // ── SYNCHRONOUS prevention — must happen before any await ──
@@ -1040,15 +1553,21 @@
       }
     }
 
+    // Register on ALL event types that could trigger a send, including
+    // mouseup/pointerup which fire AFTER mousedown and could leak.
     document.addEventListener('mousedown', handleSendTrigger, true);
+    document.addEventListener('mouseup', handleSendTrigger, true);
     document.addEventListener('pointerdown', handleSendTrigger, true);
+    document.addEventListener('pointerup', handleSendTrigger, true);
     document.addEventListener('click', handleSendTrigger, true);
     document.addEventListener('submit', handleSendTrigger, true);
 
     // Intercept Enter key in input.
     // Same principle: e.preventDefault() must fire synchronously before any await.
     document.addEventListener('keydown', (e) => {
-      if (!isEnabled || isProcessing || bypassInterception) return;
+      if (!isEnabled || bypassInterception) return;
+      // Block keydown while processing (prevents repeat Enter presses)
+      if (blockWhileProcessing(e)) return;
       if (e.key !== 'Enter' || e.shiftKey) return;
 
       const currentSite = detectSite();
