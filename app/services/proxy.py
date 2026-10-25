@@ -8,7 +8,11 @@ from app.models import ChatCompletionRequest, PolicyAction, PolicyDecision
 from app.detectors.pipeline import detection_pipeline
 from app.policy.engine import policy_engine
 from app.compliance.audit import audit_logger
-from app.services.media_redaction import inject_sanitized_media_into_payload
+from app.services.media_redaction import (
+    collect_media_attachments,
+    inject_sanitized_media_into_payload,
+    normalize_multimodal_payload,
+)
 
 
 def _resolve_provider(request_provider: Optional[str]) -> LLMProvider:
@@ -439,27 +443,7 @@ class ProxyService:
         combined_prompt = "\n".join(prompt_parts)
 
         # Collect all attachments for media scanning
-        all_attachments = []
-        for msg in request.messages:
-            if msg.attachments:
-                for att in msg.attachments:
-                    all_attachments.append({
-                        "filename": att.filename,
-                        "content_base64": att.content_base64,
-                        "mime_type": att.mime_type,
-                    })
-            # Also extract base64 images from multimodal content arrays
-            if isinstance(msg.content, list):
-                for part in msg.content:
-                    if isinstance(part, dict) and part.get("type") == "image_url":
-                        image_url = part.get("image_url", {})
-                        url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
-                        if url.startswith("data:"):
-                            all_attachments.append({
-                                "filename": "inline_image",
-                                "content_base64": url,
-                                "mime_type": "image/png",
-                            })
+        all_attachments = collect_media_attachments(request.messages)
 
         # 2. Run 4-stage detection pipeline (with media scanning)
         pipeline_result = detection_pipeline.run(
@@ -505,6 +489,7 @@ class ProxyService:
         # Prepare modified payload if REDACT
         target_payload = request.model_dump()
         target_payload["model"] = model  # Ensure resolved model is used
+        normalize_multimodal_payload(target_payload)
 
         # Strip attachments from payload before forwarding to LLM
         for msg in target_payload.get("messages", []):

@@ -26,6 +26,113 @@ logger = logging.getLogger("promptguard.media_redaction")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _message_value(message: Any, key: str, default: Any = None) -> Any:
+    """Read a message field from either a Pydantic model or a plain dict."""
+    if isinstance(message, dict):
+        return message.get(key, default)
+    return getattr(message, key, default)
+
+
+def _media_part_to_data_uri(part: Dict[str, Any]) -> Optional[str]:
+    """Return a canonical data URI for common provider-native inline images."""
+    image_url = part.get("image_url")
+    if part.get("type") == "image_url" and image_url:
+        url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+        return url if url.startswith("data:") else None
+
+    inline = part.get("inline_data") or part.get("inlineData")
+    if isinstance(inline, dict):  # Gemini request parts
+        data = inline.get("data", "")
+        mime = inline.get("mime_type") or inline.get("mimeType") or "image/png"
+        if data:
+            return data if data.startswith("data:") else f"data:{mime};base64,{data}"
+
+    if part.get("type") == "image":  # Anthropic request content blocks
+        source = part.get("source", {})
+        if isinstance(source, dict) and source.get("type") == "base64" and source.get("data"):
+            mime = source.get("media_type", "image/png")
+            data = source["data"]
+            return data if data.startswith("data:") else f"data:{mime};base64,{data}"
+    return None
+
+
+def _is_unscannable_media_part(part: Dict[str, Any]) -> bool:
+    """Identify media references that cannot be inspected without fetching them."""
+    image_url = part.get("image_url")
+    if part.get("type") == "image_url" and image_url:
+        url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+        return bool(url) and not url.startswith("data:")
+
+    if part.get("type") == "image":
+        source = part.get("source", {})
+        return isinstance(source, dict) and source.get("type") == "url"
+
+    return bool(part.get("file_data") or part.get("fileData"))
+
+
+def normalize_multimodal_payload(payload: Dict[str, Any]) -> None:
+    """Normalize inline image parts to the gateway's canonical image_url form.
+
+    The conversion happens before provider adapters run, so provider-native
+    Gemini/Anthropic image parts follow the same scan and redaction path as
+    OpenAI-compatible image_url parts.
+    """
+    for message in payload.get("messages", []):
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        normalized = []
+        for part in content:
+            if isinstance(part, dict):
+                data_uri = _media_part_to_data_uri(part)
+                if data_uri is not None:
+                    normalized.append({
+                        "type": "image_url",
+                        "image_url": {"url": data_uri, "detail": "auto"},
+                    })
+                    continue
+                if _is_unscannable_media_part(part):
+                    normalized.append({
+                        "type": "text",
+                        "text": "[Media omitted because PromptGuard could not inspect its remote source.]",
+                    })
+                    logger.warning("Omitted remote or provider-hosted media that could not be inspected")
+                    continue
+            normalized.append(part)
+        message["content"] = normalized
+
+
+def collect_media_attachments(messages: List[Any]) -> List[Dict[str, Any]]:
+    """Collect explicit files and inline base64 media across provider formats."""
+    attachments: List[Dict[str, Any]] = []
+    for message in messages:
+        for attachment in _message_value(message, "attachments", []) or []:
+            filename = _message_value(attachment, "filename", "attachment")
+            content = _message_value(attachment, "content_base64", "")
+            if content:
+                attachments.append({
+                    "filename": filename,
+                    "content_base64": content,
+                    "mime_type": _message_value(attachment, "mime_type"),
+                })
+
+        content = _message_value(message, "content", "")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            data_uri = _media_part_to_data_uri(part)
+            if not data_uri:
+                continue
+            mime_type = data_uri[5:].split(";", 1)[0] or "image/png"
+            attachments.append({
+                "filename": "inline_image",
+                "content_base64": data_uri,
+                "mime_type": mime_type,
+            })
+    return attachments
+
 def _redact_text_with_matches(text: str, matches: List[DetectionMatch]) -> str:
     """Apply snippet-based redaction on a plain text string using matches."""
     redacted = text

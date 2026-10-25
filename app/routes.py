@@ -7,7 +7,12 @@ from app.services.proxy import proxy_service, _resolve_provider, _resolve_model
 from app.detectors.pipeline import detection_pipeline
 from app.policy.engine import policy_engine
 from app.compliance.audit import audit_logger
-from app.services.media_redaction import sanitize_attachment, inject_sanitized_media_into_payload
+from app.services.media_redaction import (
+    collect_media_attachments,
+    inject_sanitized_media_into_payload,
+    normalize_multimodal_payload,
+    sanitize_attachment,
+)
 
 router = APIRouter()
 
@@ -34,28 +39,7 @@ def _collect_attachments(messages) -> List[dict]:
     Collect all attachments from message objects for media scanning.
     Returns a list of attachment dicts suitable for the pipeline.
     """
-    attachments = []
-    for msg in messages:
-        if hasattr(msg, 'attachments') and msg.attachments:
-            for att in msg.attachments:
-                attachments.append({
-                    "filename": att.filename,
-                    "content_base64": att.content_base64,
-                    "mime_type": att.mime_type,
-                })
-        # Also extract base64 images from multimodal content arrays
-        if hasattr(msg, 'content') and isinstance(msg.content, list):
-            for part in msg.content:
-                if isinstance(part, dict) and part.get("type") == "image_url":
-                    image_url = part.get("image_url", {})
-                    url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
-                    if url.startswith("data:"):
-                        attachments.append({
-                            "filename": "inline_image",
-                            "content_base64": url,
-                            "mime_type": "image/png",
-                        })
-    return attachments
+    return collect_media_attachments(messages)
 
 
 @router.post("/v1/chat/completions")
@@ -204,6 +188,7 @@ async def chat_with_inspection(request: ChatCompletionRequest, req: Request):
     # 4b. If ALLOW or REDACT — forward (possibly sanitized) payload to LLM
     target_payload = request.model_dump()
     target_payload["model"] = model  # Use resolved model
+    normalize_multimodal_payload(target_payload)
 
     # Strip attachments from the payload before forwarding to LLM
     # (attachments are for gateway inspection only, not sent to upstream LLMs)

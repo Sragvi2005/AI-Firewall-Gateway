@@ -281,6 +281,86 @@
     return found;
   }
 
+  function blobToDataUri(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('Could not read uploaded media'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function collectFormDataMedia(formData) {
+    const found = [];
+    for (const [field, value] of formData.entries()) {
+      if (!(value instanceof Blob)) continue;
+      const filename = value.name || `${field}-upload`;
+      found.push({
+        filename,
+        content_base64: await blobToDataUri(value),
+        mime_type: value.type || 'application/octet-stream',
+        formField: field,
+      });
+    }
+    return found;
+  }
+
+  function formDataTextForInspection(formData) {
+    const fields = {};
+    for (const [key, value] of formData.entries()) {
+      if (value instanceof Blob) continue;
+      if (key in fields) {
+        fields[key] = Array.isArray(fields[key]) ? [...fields[key], value] : [fields[key], value];
+      } else {
+        fields[key] = value;
+      }
+    }
+    return JSON.stringify(fields);
+  }
+
+  function dataUriToFile(dataUri, filename) {
+    const comma = dataUri.indexOf(',');
+    if (comma < 0) throw new Error('Sanitized media has an invalid data URI');
+    const mime = (dataUri.slice(0, comma).match(/^data:([^;]+)/) || [])[1] || 'application/octet-stream';
+    const binary = atob(dataUri.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new File([bytes], filename, { type: mime, lastModified: Date.now() });
+  }
+
+  function rewriteFormData(formData, endpoint, promptText, redactedPrompt, media, sanitizedByName) {
+    const rewritten = new FormData();
+    const mediaByName = new Map(media.map(item => [item.filename, item]));
+    for (const [key, value] of formData.entries()) {
+      if (value instanceof Blob) {
+        const item = mediaByName.get(value.name || `${key}-upload`);
+        const sanitized = item && sanitizedByName.get(item.filename);
+        if (sanitized?.content_base64) {
+          rewritten.append(key, dataUriToFile(sanitized.content_base64, item.filename), item.filename);
+        } else if (value.name) {
+          rewritten.append(key, value, value.name);
+        } else {
+          rewritten.append(key, value);
+        }
+      } else {
+        let text = promptText && value.includes(promptText)
+          ? value.replace(promptText, redactedPrompt)
+          : endpoint.replacePrompt(value, redactedPrompt);
+        text = replaceInlineMedia(text, media, sanitizedByName);
+        rewritten.append(key, text);
+      }
+    }
+    return rewritten;
+  }
+
+  function headersForFormData(headersInit) {
+    const headers = new Headers(headersInit || {});
+    // The browser must generate the new multipart boundary for the rewritten
+    // body. Retaining the original Content-Type boundary corrupts FormData.
+    headers.delete('content-type');
+    return headers;
+  }
+
   function replaceInlineMedia(bodyStr, media, sanitizedByName) {
     if (!media.length) return bodyStr;
     let parsed;
@@ -342,6 +422,7 @@
 
     // Extract the request body
     let bodyStr = '';
+    let formDataBody = null;
     if (init?.body) {
       if (typeof init.body === 'string') {
         bodyStr = init.body;
@@ -350,8 +431,8 @@
       } else if (init.body instanceof ArrayBuffer || init.body instanceof Uint8Array) {
         bodyStr = new TextDecoder().decode(init.body);
       } else if (init.body instanceof FormData) {
-        // Can't easily rewrite FormData; pass through
-        return _originalFetch.apply(this, arguments);
+        formDataBody = init.body;
+        bodyStr = formDataTextForInspection(formDataBody);
       } else if (init.body instanceof ReadableStream) {
         // Read the stream, then reconstruct
         const reader = init.body.getReader();
@@ -377,6 +458,7 @@
     // Extract the user prompt
     const promptText = endpoint.extractPrompt(bodyStr);
     const inlineMedia = collectInlineMedia(bodyStr);
+    if (formDataBody) inlineMedia.push(...await collectFormDataMedia(formDataBody));
     if ((!promptText || !promptText.trim()) && inlineMedia.length === 0) return _originalFetch.apply(this, arguments);
 
     console.log(`[PromptGuard:Fetch] Intercepted ${endpoint.name} API call, prompt length: ${promptText.length}`);
@@ -429,7 +511,13 @@
       showRedactNotification(promptText, redactedPrompt, result.reasons || []);
       let newBody = endpoint.replacePrompt(bodyStr, redactedPrompt);
       newBody = replaceInlineMedia(newBody, inlineMedia, sanitizedByName);
-      const newInit = { ...(init || {}), body: newBody };
+      const newInit = formDataBody
+        ? {
+            ...(init || {}),
+            body: rewriteFormData(formDataBody, endpoint, promptText, redactedPrompt, inlineMedia, sanitizedByName),
+            headers: headersForFormData(init?.headers),
+          }
+        : { ...(init || {}), body: newBody };
       return _originalFetch.call(this, resource, newInit);
     }
 
