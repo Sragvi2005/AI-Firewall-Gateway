@@ -222,7 +222,18 @@
 
   // ── State ──
   let isEnabled = true;
-  // Listen for toggle messages from the content script
+
+  // Listen for toggle relayed from content.js (ISOLATED world) via postMessage.
+  // CustomEvents dispatched in ISOLATED world do NOT reach MAIN world —
+  // postMessage is the only reliable cross-world channel.
+  window.addEventListener('message', (e) => {
+    if (e.source === window && e.data && e.data.type === '__promptguard_toggle' && typeof e.data.enabled === 'boolean') {
+      isEnabled = e.data.enabled;
+      console.log(`[PromptGuard:Fetch] Interceptor ${e.data.enabled ? 'enabled' : 'disabled'}`);
+    }
+  });
+
+  // Legacy: also accept the CustomEvent in case other scripts dispatch it
   window.addEventListener('promptguard-toggle', (e) => {
     if (e.detail && typeof e.detail.enabled === 'boolean') {
       isEnabled = e.detail.enabled;
@@ -234,22 +245,28 @@
 
   // ── Helper: call the gateway for inspection ──
   async function inspectWithGateway(promptText, attachments = []) {
-    try {
-      const resp = await _originalFetch(INSPECT_EP, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: promptText,
-          user: 'chrome-extension-user',
-          ...(attachments.length ? { attachments: attachments.map(({ filename, content_base64, mime_type }) => ({ filename, content_base64, mime_type })) } : {}),
-        }),
-      });
-      if (!resp.ok) return null;
-      return await resp.json();
-    } catch (err) {
-      console.warn('[PromptGuard:Fetch] Gateway unreachable:', err.message);
-      return null;
-    }
+    const requestId = `pg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => finish(null), 15000);
+      const onMessage = (event) => {
+        const data = event.data;
+        if (event.source !== window || !data || data.type !== '__promptguard_inspect_response'
+          || data.requestId !== requestId) return;
+        finish(data.result || null);
+      };
+      const finish = (result) => {
+        clearTimeout(timeout);
+        window.removeEventListener('message', onMessage);
+        resolve(result);
+      };
+      window.addEventListener('message', onMessage);
+      window.postMessage({
+        type: '__promptguard_inspect_request',
+        requestId,
+        prompt: promptText,
+        attachments: attachments.map(({ filename, content_base64, mime_type }) => ({ filename, content_base64, mime_type })),
+      }, '*');
+    });
   }
 
   // Walk media data URIs embedded in request JSON so they can be scanned and
@@ -390,13 +407,17 @@
 
   // ── Show a minimal block notification (injected directly since we're in MAIN world) ──
   function showBlockNotification(reasons) {
-    // Dispatch event so content.js can show its rich overlay if it's listening
+    // Use postMessage to cross the MAIN→ISOLATED world boundary.
+    // CustomEvents fired in MAIN world are NOT received by ISOLATED-world listeners.
+    window.postMessage({ type: '__promptguard_fetch_blocked', reasons }, '*');
+    // Also dispatch CustomEvent as a fallback for same-world listeners
     window.dispatchEvent(new CustomEvent('promptguard-fetch-blocked', {
       detail: { reasons }
     }));
   }
 
   function showRedactNotification(original, redacted, reasons) {
+    window.postMessage({ type: '__promptguard_fetch_redacted', original, redacted, reasons }, '*');
     window.dispatchEvent(new CustomEvent('promptguard-fetch-redacted', {
       detail: { original, redacted, reasons }
     }));

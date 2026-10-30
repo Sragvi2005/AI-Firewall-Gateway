@@ -14,7 +14,6 @@
   'use strict';
 
   const GATEWAY_URL = 'http://localhost:8000';
-  const INSPECT_ENDPOINT = `${GATEWAY_URL}/api/inspect`;
   const STORAGE_KEY = 'promptguard_enabled';
 
   let isEnabled = true;
@@ -95,6 +94,10 @@
       chrome.runtime.onMessage.addListener((msg) => {
         if (msg.type === 'TOGGLE_PROGUARD' || msg.type === 'TOGGLE_PROMPTGUARD') {
           isEnabled = msg.enabled;
+          // Relay the toggle to fetch_interceptor.js running in MAIN world.
+          // chrome.runtime messages are only delivered to ISOLATED world;
+          // postMessage is the only reliable ISOLATED→MAIN cross-world channel.
+          window.postMessage({ type: '__promptguard_toggle', enabled: msg.enabled }, '*');
         }
         if (msg.type === 'GET_STATUS') {
           chrome.runtime.sendMessage({
@@ -108,29 +111,58 @@
     }
   } catch (e) { /* MAIN world — no chrome.runtime access */ }
 
-  // In MAIN world, listen for toggle via custom DOM events
-  window.addEventListener('promptguard-toggle', (e) => {
-    if (e.detail && typeof e.detail.enabled === 'boolean') {
-      isEnabled = e.detail.enabled;
+  // In MAIN world, listen for toggle via postMessage (cross-world safe).
+  // CustomEvents are NOT shared between ISOLATED and MAIN worlds.
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const data = e.data;
+    if (!data || typeof data !== 'object') return;
+
+    // Toggle relayed from MAIN world fetch_interceptor.js or from the ISOLATED
+    // world's own onMessage handler (self-relay for same-world listeners)
+    if (data.type === '__promptguard_toggle' && typeof data.enabled === 'boolean') {
+      isEnabled = data.enabled;
+    }
+
+    // MAIN-world fetch interception cannot reliably call localhost directly:
+    // the LLM page's CSP and CORS policy applies there. Perform gateway calls
+    // in this isolated content-script world, where the extension host
+    // permission applies, then return the inspection result across the bridge.
+    if (data.type === '__promptguard_inspect_request' && typeof data.requestId === 'string') {
+      const requestId = data.requestId;
+      const prompt = typeof data.prompt === 'string' ? data.prompt : '';
+      const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+      chrome.runtime.sendMessage({
+        type: 'PROMPTGUARD_INSPECT',
+        prompt,
+        attachments: attachments.map(({ filename, content_base64, mime_type }) => ({ filename, content_base64, mime_type })),
+      }).then((result) => {
+        window.postMessage({ type: '__promptguard_inspect_response', requestId, result }, '*');
+      }).catch(() => {
+        window.postMessage({ type: '__promptguard_inspect_response', requestId, result: null }, '*');
+      });
+    }
+
+    // Overlay notifications from fetch_interceptor.js (MAIN world).
+    // CustomEvents fired in MAIN world are invisible to ISOLATED world listeners,
+    // so fetch_interceptor.js re-dispatches them via postMessage.
+    if (data.type === '__promptguard_fetch_blocked') {
+      const reasons = (data.reasons) || ['Request blocked by security policy'];
+      showFetchOverlay('BLOCK', '', '', reasons);
+    }
+    if (data.type === '__promptguard_fetch_redacted') {
+      const reasons = data.reasons || ['Sensitive data was detected and redacted'];
+      showFetchOverlay('REDACT', data.original || '', data.redacted || '', reasons);
     }
   });
 
   /* =========================================
      FETCH INTERCEPTOR EVENT LISTENERS
-     Listen for events from fetch_interceptor.js (MAIN world)
-     which catches actual API calls at the network level.
+     Listen for postMessage events from fetch_interceptor.js (MAIN world).
+     CustomEvents fired in MAIN world do NOT reach ISOLATED world listeners —
+     the consolidated window.addEventListener('message', ...) handler above
+     already processes '__promptguard_fetch_blocked' and '__promptguard_fetch_redacted'.
      ========================================= */
-
-  window.addEventListener('promptguard-fetch-blocked', (e) => {
-    const reasons = (e.detail && e.detail.reasons) || ['Request blocked by security policy'];
-    showFetchOverlay('BLOCK', '', '', reasons);
-  });
-
-  window.addEventListener('promptguard-fetch-redacted', (e) => {
-    const detail = e.detail || {};
-    const reasons = detail.reasons || ['Sensitive data was detected and redacted'];
-    showFetchOverlay('REDACT', detail.original || '', detail.redacted || '', reasons);
-  });
 
   /**
    * Show an overlay notification triggered by the fetch interceptor.
@@ -687,29 +719,15 @@
 
   async function inspectPrompt(promptText, attachments = []) {
     try {
-      const payload = {
+      return await chrome.runtime.sendMessage({
+        type: 'PROMPTGUARD_INSPECT',
         prompt: promptText || '',
-        user: 'chrome-extension-user',
-      };
-      if (attachments && attachments.length > 0) {
-        payload.attachments = attachments.map((a) => ({
+        attachments: (attachments || []).map((a) => ({
           filename: a.filename,
           content_base64: a.content_base64,
           mime_type: a.mime_type,
-        }));
-      }
-
-      const resp = await fetch(INSPECT_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        })),
       });
-
-      if (!resp.ok) {
-        throw new Error(`Gateway returned ${resp.status}`);
-      }
-
-      return await resp.json();
     } catch (err) {
       console.error('[PromptGuard] Gateway inspection failed:', err);
       return null;
@@ -1673,7 +1691,14 @@
       }
     });
 
-    observer.observe(document.body, {
+    // At document_start the body may not exist yet. Observe the document root
+    // so lazy editor detection works on the first initialization as well.
+    const observationRoot = document.body || document.documentElement;
+    if (!observationRoot) {
+      observer.disconnect();
+      return;
+    }
+    observer.observe(observationRoot, {
       childList: true,
       subtree: true,
     });
@@ -1935,10 +1960,11 @@
       try { injectStyles(); } catch (e) {}
     }
 
-    // Attach capture phase event listeners immediately
-    attachListeners();
-
-    // Monitor for lazy-loaded editor UI
+    // waitForEditorAndAttach handles both the immediate case (editor already
+    // in DOM) and the lazy-load case (editor appears after navigation).
+    // Do NOT call attachListeners() directly here — waitForEditorAndAttach()
+    // calls it at the right time, and calling it twice causes redundant
+    // MutationObserver registrations.
     waitForEditorAndAttach();
   }
 

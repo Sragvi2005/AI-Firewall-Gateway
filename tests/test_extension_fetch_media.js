@@ -19,14 +19,32 @@ class FakeFileReader {
 
 function createHarness(inspectResult) {
   const state = { inspected: null, forwarded: null };
+  const listeners = new Map();
   const window = {
-    addEventListener() {},
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    },
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
+    },
+    postMessage(message) {
+      if (message.type !== '__promptguard_inspect_request') return;
+      state.inspected = {
+        prompt: message.prompt,
+        user: 'chrome-extension-user',
+        ...(message.attachments.length ? { attachments: message.attachments } : {}),
+      };
+      for (const listener of listeners.get('message') || []) {
+        listener({ source: window, data: {
+          type: '__promptguard_inspect_response',
+          requestId: message.requestId,
+          result: inspectResult,
+        } });
+      }
+    },
     dispatchEvent() {},
     fetch: async (resource, init = {}) => {
-      if (String(resource).includes('/api/inspect')) {
-        state.inspected = JSON.parse(init.body);
-        return { ok: true, json: async () => inspectResult };
-      }
       state.forwarded = { resource: String(resource), init };
       return { ok: true, status: 200 };
     },
@@ -47,6 +65,7 @@ function createHarness(inspectResult) {
     Uint8Array,
     Date,
     setTimeout,
+    clearTimeout,
     atob,
     btoa,
     console: { log() {}, warn() {}, error() {} },
