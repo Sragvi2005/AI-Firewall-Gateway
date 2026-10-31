@@ -14,6 +14,8 @@ from app.detectors.media_extractor import (
     _decode_base64_content,
     redact_image_base64,
     redact_pdf_base64,
+    redact_xlsx_base64,
+    redact_docx_base64,
     IMAGE_MIME_TYPES,
 )
 from app.models import DetectionMatch
@@ -170,7 +172,7 @@ def _extract_pdf_text_for_forwarding(content_base64: str) -> Optional[str]:
 def sanitize_attachment(
     attachment: Dict[str, Any], matches: List[DetectionMatch]
 ) -> Optional[Dict[str, Any]]:
-    """Produce a sanitized replacement for a detected image or PDF attachment."""
+    """Produce a sanitized replacement for supported media attachments."""
     if not matches:
         return None
     filename = attachment.get("filename", "attachment")
@@ -181,6 +183,10 @@ def sanitize_attachment(
         sanitized = redact_image_base64(content, matches)
     elif mime_type == "application/pdf":
         sanitized = redact_pdf_base64(content, matches)
+    elif mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        sanitized = redact_xlsx_base64(content, matches)
+    elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        sanitized = redact_docx_base64(content, matches)
     else:
         sanitized = None
 

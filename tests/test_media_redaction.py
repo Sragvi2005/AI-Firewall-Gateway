@@ -1,6 +1,8 @@
 import base64
+import io
 import fitz
 import pytest
+from docx import Document
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -20,6 +22,16 @@ def _pdf_data_uri(text: str) -> str:
     pdf_bytes = document.tobytes()
     document.close()
     return "data:application/pdf;base64," + base64.b64encode(pdf_bytes).decode("ascii")
+
+
+def _docx_data_uri() -> str:
+    document = Document()
+    paragraph = document.add_paragraph("Contact: ")
+    paragraph.add_run("alice@")
+    paragraph.add_run("example.com")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def test_pdf_redaction_returns_safe_copy_when_detector_span_cannot_be_located():
@@ -73,6 +85,30 @@ def test_inspect_endpoint_returns_downloadable_sanitized_pdf():
     document = fitz.open(stream=clean_bytes, filetype="pdf")
     assert all("alice@example.com" not in page.get_text() for page in document)
     document.close()
+
+
+def test_inspect_endpoint_returns_downloadable_sanitized_docx():
+    response = client.post(
+        "/api/inspect",
+        json={
+            "prompt": "Please summarize the attached report.",
+            "attachments": [{
+                "filename": "report.docx",
+                "content_base64": _docx_data_uri(),
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }],
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["action"] == "REDACT"
+    sanitized = next(item for item in result["sanitized_attachments"] if item["filename"] == "report.docx")
+    clean_bytes = base64.b64decode(sanitized["content_base64"].split(",", 1)[1])
+    clean_document = Document(io.BytesIO(clean_bytes))
+    clean_text = "\n".join(paragraph.text for paragraph in clean_document.paragraphs)
+    assert "alice@example.com" not in clean_text
+    assert "[EMAIL_ADDRESS]" in clean_text
 
 
 @pytest.mark.parametrize("part", [

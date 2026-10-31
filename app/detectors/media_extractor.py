@@ -650,13 +650,29 @@ def redact_image_base64(data_uri_or_base64: str, matches) -> Optional[str]:
     so the original image can retain its visual context without sending the
     detected text pixels upstream. None means pixel redaction was unavailable.
     """
-    if not (_PIL_AVAILABLE and _TESSERACT_AVAILABLE) or not matches:
+    if not _PIL_AVAILABLE or not matches:
         return None
 
     try:
         image_bytes = _decode_base64_content(data_uri_or_base64)
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        ocr = pytesseract.image_to_data(image, lang="eng", output_type=pytesseract.Output.DICT)
+        if not _TESSERACT_AVAILABLE:
+            # A finding already exists for this image, but OCR cannot be used
+            # to locate it for pixel-level redaction. Return a safe blank image.
+            image = Image.new("RGB", image.size, "black")
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
+        try:
+            ocr = pytesseract.image_to_data(image, lang="eng", output_type=pytesseract.Output.DICT)
+        except Exception as exc:
+            logger.warning("Image OCR redaction failed; blanking image: %s", exc)
+            image = Image.new("RGB", image.size, "black")
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
 
         words = []
         chunks = []
@@ -715,7 +731,14 @@ def redact_image_base64(data_uri_or_base64: str, matches) -> Optional[str]:
                     search_from = found_at + max(1, len(compact_snippet))
 
         if not spans and not compact_spans:
-            return None
+            # The detector found sensitive text, but this OCR pass could not
+            # map its normalized snippet back to the image. Blank the image
+            # rather than returning an unsafe original or holding the file.
+            image = Image.new("RGB", image.size, "black")
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
 
         from PIL import ImageDraw
         draw = ImageDraw.Draw(image)
@@ -742,10 +765,15 @@ def redact_image_base64(data_uri_or_base64: str, matches) -> Optional[str]:
                     )
                     redacted_boxes.add(box)
 
-        if not redacted_boxes:
-            return None
-        for box in redacted_boxes:
-            draw.rectangle(box, fill="black")
+        if redacted_boxes:
+            for box in redacted_boxes:
+                draw.rectangle(box, fill="black")
+        else:
+            # OCR found sensitive text, but its span could not be mapped back
+            # to image coordinates. A fully blank image is safe to forward;
+            # returning None here would hold the file even though a safe
+            # sanitized copy can be produced.
+            draw.rectangle((0, 0, image.width, image.height), fill="black")
 
         output = io.BytesIO()
         image.save(output, format="PNG")
@@ -753,6 +781,163 @@ def redact_image_base64(data_uri_or_base64: str, matches) -> Optional[str]:
         return f"data:image/png;base64,{encoded}"
     except Exception as exc:
         logger.warning("Image pixel redaction failed: %s", exc)
+        return None
+
+
+def redact_xlsx_base64(data_uri_or_base64: str, matches) -> Optional[str]:
+    """Return an XLSX copy with detected sensitive cell text replaced.
+
+    Each finding must map to at least one cell in the workbook. If a finding
+    cannot be located, fail closed instead of returning a partially redacted
+    workbook.
+    """
+    if not _OPENPYXL_AVAILABLE or not matches:
+        return None
+
+    try:
+        from app.policy.engine import ENTITY_PLACEHOLDERS
+
+        workbook = openpyxl.load_workbook(
+            io.BytesIO(_decode_base64_content(data_uri_or_base64)),
+            data_only=False,
+        )
+        snippets = []
+        for match in matches:
+            snippet = (match.text_snippet or "").strip()
+            if not snippet:
+                workbook.close()
+                return None
+            placeholder = ENTITY_PLACEHOLDERS.get(
+                match.entity_type, f"[{match.entity_type.upper()}_REDACTED]"
+            )
+            snippets.append((re.compile(re.escape(snippet), re.IGNORECASE), placeholder))
+
+        located = [False] * len(snippets)
+        for worksheet in workbook.worksheets:
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if not isinstance(cell.value, str):
+                        continue
+                    value = cell.value
+                    for index, (pattern, placeholder) in enumerate(snippets):
+                        value, count = pattern.subn(lambda _: placeholder, value)
+                        if count:
+                            located[index] = True
+                    cell.value = value
+
+        if not all(located):
+            workbook.close()
+            return None
+
+        output = io.BytesIO()
+        workbook.save(output)
+        workbook.close()
+        encoded = base64.b64encode(output.getvalue()).decode("ascii")
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return f"data:{mime};base64,{encoded}"
+    except Exception as exc:
+        logger.warning("XLSX redaction failed: %s", exc)
+        return None
+
+
+def redact_docx_base64(data_uri_or_base64: str, matches) -> Optional[str]:
+    """Return a DOCX copy with every detected sensitive snippet replaced.
+
+    Matches can span Word runs (for example, where formatting changes midway
+    through an email address). Replacement preserves the paragraph and run
+    structure, putting the placeholder into the first affected run. If every
+    finding cannot be located in document text, fail closed.
+    """
+    if not _DOCX_AVAILABLE or not matches:
+        return None
+
+    try:
+        import re
+        from app.policy.engine import ENTITY_PLACEHOLDERS
+
+        document = docx.Document(io.BytesIO(_decode_base64_content(data_uri_or_base64)))
+        snippets = []
+        for match in matches:
+            snippet = (match.text_snippet or "").strip()
+            if not snippet:
+                return None
+            placeholder = ENTITY_PLACEHOLDERS.get(
+                match.entity_type, f"[{match.entity_type.upper()}_REDACTED]"
+            )
+            snippets.append((re.compile(re.escape(snippet), re.IGNORECASE), placeholder))
+
+        paragraphs = []
+        seen_paragraphs = set()
+
+        def add_paragraphs(items):
+            for paragraph in items:
+                if id(paragraph._p) not in seen_paragraphs:
+                    seen_paragraphs.add(id(paragraph._p))
+                    paragraphs.append(paragraph)
+
+        def add_table_paragraphs(tables):
+            for table in tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        add_paragraphs(cell.paragraphs)
+                        add_table_paragraphs(cell.tables)
+
+        add_paragraphs(document.paragraphs)
+        add_table_paragraphs(document.tables)
+        for section in document.sections:
+            for story in (section.header, section.footer, section.first_page_header,
+                          section.first_page_footer, section.even_page_header,
+                          section.even_page_footer):
+                add_paragraphs(story.paragraphs)
+                add_table_paragraphs(story.tables)
+
+        located = [False] * len(snippets)
+        for paragraph in paragraphs:
+            runs = list(paragraph.runs)
+            run_texts = [run.text for run in runs]
+            original_text = "".join(run_texts)
+            offsets = []
+            cursor = 0
+            for text in run_texts:
+                offsets.append((cursor, cursor + len(text)))
+                cursor += len(text)
+
+            replacements = []
+            for index, (pattern, placeholder) in enumerate(snippets):
+                for found in pattern.finditer(original_text):
+                    located[index] = True
+                    replacements.append((found.start(), found.end(), placeholder))
+
+            for start, end, placeholder in sorted(replacements, reverse=True):
+                affected = [
+                    index for index, (run_start, run_end) in enumerate(offsets)
+                    if run_start < end and run_end > start
+                ]
+                if not affected:
+                    continue
+                first = affected[0]
+                first_start = max(0, start - offsets[first][0])
+                first_end = min(len(run_texts[first]), end - offsets[first][0])
+                run_texts[first] = run_texts[first][:first_start] + placeholder + run_texts[first][first_end:]
+                for run_index in affected[1:]:
+                    run_start, run_end = offsets[run_index]
+                    local_start = max(0, start - run_start)
+                    local_end = min(len(run_texts[run_index]), end - run_start)
+                    run_texts[run_index] = run_texts[run_index][:local_start] + run_texts[run_index][local_end:]
+
+            for run, text in zip(runs, run_texts):
+                run.text = text
+
+        if not all(located):
+            return None
+
+        output = io.BytesIO()
+        document.save(output)
+        encoded = base64.b64encode(output.getvalue()).decode("ascii")
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return f"data:{mime};base64,{encoded}"
+    except Exception as exc:
+        logger.warning("DOCX redaction failed: %s", exc)
         return None
 
 
